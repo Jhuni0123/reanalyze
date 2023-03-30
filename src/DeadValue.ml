@@ -16,7 +16,7 @@ let checkAnyValueBindingWithNoSideEffects
   | _ -> ()
 
 let collectValueBinding super self (vb : CL.Typedtree.value_binding) =
-  let oldCurrentBindings = !Current.bindings in
+  (* let oldCurrentBindings = !Current.bindings in *)
   let oldLastBinding = !Current.lastBinding in
   checkAnyValueBindingWithNoSideEffects vb;
   let loc =
@@ -73,10 +73,10 @@ let collectValueBinding super self (vb : CL.Typedtree.value_binding) =
       loc
     | _ -> !Current.lastBinding
   in
-  Current.bindings := PosSet.add loc.loc_start !Current.bindings;
+  (* Current.bindings := PosSet.add loc.loc_start !Current.bindings; *)
   Current.lastBinding := loc;
   let r = super.CL.Tast_mapper.value_binding self vb in
-  Current.bindings := oldCurrentBindings;
+  (* Current.bindings := oldCurrentBindings; *)
   Current.lastBinding := oldLastBinding;
   r
 
