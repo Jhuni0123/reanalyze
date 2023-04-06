@@ -91,6 +91,7 @@ let runAnalysis ~cmtRoot ~ppf =
     DeadException.forceDelayedItems ();
     DeadOptionalArgs.forceDelayedItems ();
     DeadCommon.reportDead ~checkOptionalArg:DeadOptionalArgs.check ppf;
+    DVA.reportDead ppf;
     DeadCommon.WriteDeadAnnotations.write ());
   if runConfig.exception_ then Exception.reportResults ~ppf;
   if runConfig.noalloc then Noalloc.reportResults ~ppf;

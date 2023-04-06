@@ -15,6 +15,12 @@ let pe = print_endline
 let psi i s = pi i; ps s
 let pei i s = pi i; pe s
 
+let print_loc (loc: CL.Location.t) =
+  let (file, line, startchar) = CL.Location.get_pos_info loc.loc_start in
+  let startchar =  startchar + 1 in 
+  let endchar = loc.loc_end.pos_cnum - loc.loc_start.pos_cnum + startchar in
+      Printf.printf "%s:%i:%i:%i:G_%B" file line (startchar-1) (endchar-1) (loc.loc_ghost)
+
 let rec print_lident lid =
     match lid with
     | Lident id -> ps id
@@ -34,7 +40,7 @@ let print_ident (id: CL.Ident.t) =
 let rec print_pattern pat =
     match pat.pat_desc with
     | Tpat_any -> ps "_"
-    | Tpat_var (id, loc) -> print_ident id
+    | Tpat_var (id, loc) -> print_ident id; print_loc loc.loc
     | _ -> ()
 
 and print_value_binding i (vb: CL.Typedtree.value_binding) =
@@ -63,8 +69,15 @@ and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
     if p then ps "(";
     (match expr.exp_desc with
     | Texp_ident (path, lid, vd) ->
-            (* ps "[";print_path path;ps"]"; *)
+            ps "[";print_path path;ps"]";
             print_lident lid.txt;
+            ps";";
+            (match vd.val_kind with
+            | Val_reg -> ps "reg"
+            | Val_prim prim -> ps "prim ";ps prim.prim_name
+            );
+            ps";";
+            print_loc vd.val_loc
     | Texp_constant (constant) ->
             (match constant with
             | Const_int n -> print_int n
@@ -158,7 +171,14 @@ and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
             print_expression (i) exp1; pe ";";
             pi i; print_expression (i) exp2
     | Texp_while (exp_cond, exp_body) -> ()
-    | Texp_for (id, pat, exp_start, exp_end, dir, exp_body) -> ()
+    | Texp_for (id, pat, exp_start, exp_end, dir, exp_body) ->
+        ps "for "; print_ident id; print_loc pat.ppat_loc;
+        ps " in ";
+        print_expression 0 exp_start; ps " to ";
+        print_expression 0 exp_end; pe " do";
+        pi (i+1);print_expression (i+1) exp_body;
+        print_newline ();
+        pi i;pe "done";
     | Texp_send (exp, meth, expo) -> ()
     | Texp_new () -> ()
     | Texp_instvar () -> ()
@@ -198,7 +218,17 @@ let rec print_type (t: type_expr) =
     | Tvar (Some(s)) -> ps "Tvar "; ps s
     | Tarrow (arg_label, t1, t2, commutable) -> print_type t1; ps " -> "; print_type t2;
     | Ttuple ts -> ps "("; print_list print_type ", " ts; ps ")"
-    | _ -> ps "not implemented"
+    | Tconstr _ -> ps "Tconstr"
+    | Tobject _ -> ps "Tobject"
+    | Tfield _ -> ps "Tfield"
+    | Tnil -> ps "Tnil"
+    | Tlink t' -> ps "Tlink("; print_type t'; ps ")"
+    | Tsubst _ -> ps "Tsubst"
+    | Tvariant _ -> ps "Tvariant"
+    | Tunivar _ -> ps "Tunivar"
+    | Tpoly _ -> ps "Tpoly"
+    | Tpackage _ -> ps "Tpackage"
+
 
 let print_vd (vd: value_description) =
     print_type vd.val_type
