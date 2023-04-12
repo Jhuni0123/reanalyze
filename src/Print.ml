@@ -41,7 +41,24 @@ let rec print_pattern pat =
     match pat.pat_desc with
     | Tpat_any -> ps "_"
     | Tpat_var (id, loc) -> print_ident id; print_loc loc.loc
-    | _ -> ()
+    | Tpat_alias (pat, id, loc) -> print_pattern pat; ps " as "; print_ident id
+    | Tpat_constant _ -> ps "Tpat_constant"
+    | Tpat_tuple (pats) ->
+        ps "(";
+        pats |> print_list print_pattern ",";
+        ps ")"
+    | Tpat_construct _ -> ps "Tpat_construct"
+    | Tpat_variant _ -> ps "Tpat_variant"
+    | Tpat_lazy _ -> ps "Tpat_lazy"
+    | Tpat_array _ -> ps "Tpat_array"
+    | Tpat_or (pat1, pat2, _) ->
+        print_pattern pat1;
+        ps " | ";
+        print_pattern pat2
+    | Tpat_record (fields, _) ->
+        ps "{";
+        fields |> print_list (fun (lid, lbl_desc, pat) -> ps lbl_desc.lbl_name; ps ": "; print_pattern pat) "; ";
+        ps "}"
 
 and print_value_binding i (vb: CL.Typedtree.value_binding) =
     print_pattern vb.vb_pat;

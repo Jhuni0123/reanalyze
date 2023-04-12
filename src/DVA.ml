@@ -4,50 +4,78 @@ open CL.Types
 exception RuntimeError of string
 
 (* Expression ID mapping *)
-type expr_id = CL.Location.t
+module Expr = struct
+  type id = string
 
-let exprId e = e.exp_loc
-let eidToExpr : (CL.Location.t, expression) Hashtbl.t = Hashtbl.create 256
-let exprOfId eid = Hashtbl.find eidToExpr eid
+  let counter = ref 0
 
-(* collect structures from cmt *)
-let cmtStructures : structure list ref = ref []
+  let new_loc () =
+    counter := !counter + 1;
+    CL.Location.in_file ("_expr_" ^ string_of_int !counter)
 
-let rec print_list pe del l =
-  match l with
-  | [] -> ()
-  | [e] -> pe e
-  | hd :: tl ->
-    pe hd;
-    print_string del;
-    print_list pe del tl
+  let toId e = e.exp_loc.loc_start.pos_fname
+  let fromIdTbl : (id, expression) Hashtbl.t = Hashtbl.create 256
+  let origLocTbl : (id, CL.Location.t) Hashtbl.t = Hashtbl.create 256
+  let fromId eid = Hashtbl.find fromIdTbl eid
+
+  let findOrigLoc e = Hashtbl.find origLocTbl (toId e)
+
+  let preprocess e =
+    let origLoc = e.exp_loc in
+    let e = {e with exp_loc = new_loc ()} in
+    Hashtbl.add fromIdTbl (toId e) e;
+    Hashtbl.add origLocTbl (toId e) origLoc;
+    e
+end
+
+(* Function ID mapping *)
+type fnbody = {pat : pattern; exp_id : Expr.id}
+
+let idToBody : (Expr.id, fnbody list) Hashtbl.t = Hashtbl.create 256
+let bodyOfFunction eid = Hashtbl.find idToBody eid
+
+let preprocessFunction e =
+  let eid = Expr.toId e in
+  match e.exp_desc with
+  | Texp_function {param; cases} ->
+    let ids =
+      cases
+      |> List.map (fun case ->
+             {pat = case.c_lhs; exp_id = Expr.toId case.c_rhs})
+    in
+    if Hashtbl.mem idToBody eid then raise (RuntimeError "duplicate ident");
+    Hashtbl.add idToBody eid ids
+  | _ -> ()
 
 let string_of_loc (loc : CL.Location.t) =
   let file, line, startchar = CL.Location.get_pos_info loc.loc_start in
+  let filename = file |> String.split_on_char '/' |> List.rev |> List.hd in
   let startchar = startchar + 1 in
   let endchar = loc.loc_end.pos_cnum - loc.loc_start.pos_cnum + startchar in
-  Printf.sprintf "%i:%i:%i:%B" line (startchar - 1) (endchar - 1) loc.loc_ghost
+  Printf.sprintf "%s:%i:%i:%i:%B" filename line (startchar - 1) (endchar - 1)
+    loc.loc_ghost
 
 module ValueMeta = struct
   type t =
-    | VM_Expr of expr_id
-    | VM_Mutable of expr_id * string
+    | VM_Expr of Expr.id
+    | VM_Mutable of Expr.id * string
     | VM_Name of string * CL.Location.t
 
-  let expr e = VM_Expr e.exp_loc
+  let expr e = VM_Expr (Expr.toId e)
   let compare = compare
 
   let print vm =
     match vm with
-    | VM_Expr eid -> Printf.printf "Expr(%s)" (string_of_loc eid)
+    | VM_Expr eid -> Printf.printf "Expr(%s)" eid
     | VM_Mutable (et, s) -> Printf.printf "Mut(%s)" s
-    | VM_Name (name, loc) -> Printf.printf "Var(%s)" name
+    | VM_Name (name, loc) ->
+      Printf.printf "Name(%s,%s)" name (string_of_loc loc)
 
   let report ppf vm =
     let loc =
       match vm with
-      | VM_Expr eid -> (exprOfId eid).exp_loc
-      | VM_Mutable (eid, _) -> (exprOfId eid).exp_loc
+      | VM_Expr eid -> (Expr.fromId eid).exp_loc
+      | VM_Mutable (eid, _) -> (Expr.fromId eid).exp_loc
       | VM_Name (name, loc) -> loc
     in
     let name =
@@ -69,48 +97,46 @@ module Field = struct
 end
 
 module Value = struct
-  type case = {pat : pattern; exp_id : expr_id}
-
   type t =
-    | V_Expr of expr_id
-    | V_Mutable of expr_id * string
-    | V_Var of string * CL.Location.t (* except primitive *)
+    | V_Expr of Expr.id
+    | V_Mutable of Expr.id * string
+    | V_Name of string * CL.Location.t (* except primitive *)
     | V_Prim of CL.Primitive.description
-    | V_Cstr of constructor_description * expr_id list
-    | V_Variant of string * expr_id
-    | V_Field of Field.t * expr_id
-    | V_Fn of CL.Ident.t * case list (* λx.e *)
+    | V_Cstr of constructor_description * Expr.id list
+    | V_Variant of string * Expr.id
+    | V_Field of Field.t * Expr.id
+    | V_Fn of Expr.id * CL.Ident.t (* (λx.e)_l *)
     | V_PartialApp of
-        expr_id * expr_id option list (* first arg is none: e [_ e1 e2] *)
+        Expr.id * Expr.id option list (* first arg is none: e [_ e1 e2] *)
     | V_FnSideEffect
 
   let compare = compare
-  let expr e = V_Expr e.exp_loc
+  let expr e = V_Expr (Expr.toId e)
 
   let print v =
     match v with
-    | V_Expr eid -> Printf.printf "Expr(%s)" (string_of_loc eid)
+    | V_Expr eid -> Printf.printf "Expr(%s)" eid
     | V_Mutable (et, s) -> Printf.printf "Mut(%s)" s
-    | V_Var (name, loc) -> Printf.printf "Var(%s)" name
+    | V_Name (name, loc) -> Printf.printf "Name(%s,%s)" name (string_of_loc loc)
     | V_Prim prim -> Printf.printf "Prim(%s)" prim.prim_name
     | V_Cstr (cstr_desc, eids) ->
       Printf.printf "Cstr-%s(" cstr_desc.cstr_name;
-      print_list (fun eid -> print_string (string_of_loc eid)) "," eids;
+      Print.print_list (fun eid -> print_string eid) "," eids;
       print_string ")"
-    | V_Variant (k, et) -> Printf.printf "Variant(%s,%s)" k (string_of_loc et)
-    | V_Field (f, et) ->
+    | V_Variant (k, eid) -> Printf.printf "Variant(%s,%s)" k eid
+    | V_Field (f, eid) ->
       Printf.printf "Field(%s,%s)"
         (match f with F_Record f -> f | F_Tuple n -> string_of_int n)
-        (string_of_loc et)
-    | V_Fn (param, cases) -> Printf.printf "Fn(%s)" param.name
+        eid
+    | V_Fn (eid, param) -> Printf.printf "Fn(%s)" param.name
     | V_PartialApp (eid, args) ->
-      Printf.printf "App(%s,[" (string_of_loc eid);
+        Printf.printf "App(%s,[" eid;
       None :: args
-      |> print_list
+      |> Print.print_list
            (fun argo ->
              match argo with
              | None -> print_string "-"
-             | Some eid -> print_string (string_of_loc eid))
+             | Some eid -> print_string eid)
            ",";
       print_string "])"
     | V_FnSideEffect -> Printf.printf "λ.φ"
@@ -120,7 +146,7 @@ open ValueMeta
 open Value
 
 module Reduction = struct
-  type t = Reduce of expr_id * expr_id * expr_id option list (* e [e1, ...] *)
+  type t = Reduce of Expr.id * Expr.id * Expr.id option list (* e [e1, ...] *)
 
   let compare = compare
 end
@@ -129,7 +155,7 @@ open Reduction
 module ReductionSet = Set.Make (Reduction)
 
 module Reductions = struct
-  type t = (expr_id, ReductionSet.t) Hashtbl.t
+  type t = (Expr.id, ReductionSet.t) Hashtbl.t
 
   let add k reduc (reductions : t) : bool =
     match Hashtbl.find_opt reductions k with
@@ -269,7 +295,7 @@ module Live = struct
     | Bot -> ps "⊥"
     | Variant ks ->
       ks |> StringMap.bindings
-      |> print_list
+      |> Print.print_list
            (fun (k, vo) ->
              ps k;
              ps "(";
@@ -278,7 +304,7 @@ module Live = struct
            "+"
     | Record fs ->
       fs |> FieldMap.bindings
-      |> print_list
+      |> Print.print_list
            (fun (k, v) ->
              (match k with
              | Field.F_Tuple n -> print_int n
@@ -289,7 +315,7 @@ module Live = struct
            "*"
     | Construct cs ->
       cs |> CstrMap.bindings
-      |> print_list
+      |> Print.print_list
            (fun ((cstr_desc, idx), v) ->
              ps cstr_desc.cstr_name;
              ps "[";
@@ -300,27 +326,30 @@ module Live = struct
              ps ")")
            "+"
 
-  let rec baseFromPattern pat =
+  let rec controlledByPat pat =
     match pat.pat_desc with
     | Tpat_any -> Bot
     | Tpat_var _ -> Bot
-    | Tpat_alias (pat, id, l) -> baseFromPattern pat
+    | Tpat_alias (pat, id, l) -> controlledByPat pat
     | Tpat_constant c -> Top
     | Tpat_tuple pats ->
       pats
-      |> List.mapi (fun i pat -> field (F_Tuple i) (baseFromPattern pat))
+      |> List.mapi (fun i pat -> field (F_Tuple i) (controlledByPat pat))
       |> List.fold_left (fun acc l -> join acc l) Bot
     | Tpat_construct (lid, cstr_desc, pats) ->
       pats
-      |> List.mapi (fun i pat -> construct cstr_desc i (baseFromPattern pat))
+      |> List.mapi (fun i pat -> construct cstr_desc i (controlledByPat pat))
       |> List.fold_left join Bot
     | Tpat_variant (label, pato, row) ->
-      variant label (pato |> Option.map baseFromPattern)
-    (* TODO *)
-    | Tpat_record _ -> Top (* TODO *)
-    | Tpat_array _ -> Top
+      variant label (pato |> Option.map controlledByPat)
+    | Tpat_record (fields, closed_flag) ->
+      fields
+      |> List.map (fun (lid, lbl_desc, pat) ->
+             field (F_Record lbl_desc.lbl_name) (controlledByPat pat))
+      |> List.fold_left join Bot
+    | Tpat_array _ -> Top (* TODO: array *)
     | Tpat_or (pat1, pat2, _) ->
-      join (baseFromPattern pat1) (baseFromPattern pat2)
+      join (controlledByPat pat1) (controlledByPat pat2)
     | Tpat_lazy _ -> Top
 end
 
@@ -354,7 +383,7 @@ module ValueSet = struct
   let print vs =
     match vs with
     | VS_Top -> print_string "Top"
-    | VS_Set s -> s |> ElemSet.elements |> print_list Value.print ", "
+    | VS_Set s -> s |> ElemSet.elements |> Print.print_list Value.print ", "
 
   let mem k vs = match vs with VS_Top -> true | VS_Set s -> s |> ElemSet.mem k
 end
@@ -417,7 +446,7 @@ module Liveness = struct
 end
 
 module ExprIdSet = Set.Make (struct
-  type t = expr_id
+  type t = Expr.id
 
   let compare = compare
 end)
@@ -515,13 +544,13 @@ module Current = struct
     }
 
   let markSideEffect e : bool =
-    if !sideEffectSet |> ExprIdSet.mem e.exp_loc then false
+    if !sideEffectSet |> ExprIdSet.mem (Expr.toId e) then false
     else (
-      sideEffectSet := !sideEffectSet |> ExprIdSet.add e.exp_loc;
+      sideEffectSet := !sideEffectSet |> ExprIdSet.add (Expr.toId e);
       true)
 
   let hasSideEffect : expression -> bool =
-   fun e -> !sideEffectSet |> ExprIdSet.mem e.exp_loc
+   fun e -> !sideEffectSet |> ExprIdSet.mem (Expr.toId e)
 
   let isSideEffectFn : expression -> bool =
    fun e ->
@@ -558,7 +587,7 @@ module Current = struct
         let cond =
           cases
           |> List.fold_left
-               (fun acc case -> Live.join acc (Live.baseFromPattern case.c_lhs))
+               (fun acc case -> Live.join acc (Live.controlledByPat case.c_lhs))
                Live.Bot
         in
         liveness |> Liveness.join (ValueMeta.expr exp) cond
@@ -571,16 +600,6 @@ module Current = struct
     Graph.reset graph;
     Hashtbl.reset liveness
 end
-
-let traverseExpr (f : expression -> unit) e =
-  let super = CL.Tast_mapper.default in
-  let expr self e =
-    f e;
-    super.expr self e
-  in
-  let mapper = {super with expr} in
-  let _ = mapper.expr mapper e in
-  ()
 
 let traverseValueMetaMapper f =
   let super = CL.Tast_mapper.default in
@@ -638,34 +657,28 @@ module ClosureAnalysis = struct
     | Texp_ident (path, lid, vd) -> (
       match vd.val_kind with
       | Val_reg ->
-        addValue (ValueMeta.expr e) (V_Var (CL.Path.last path, vd.val_loc))
+        addValue (ValueMeta.expr e) (V_Name (CL.Path.last path, vd.val_loc))
       | Val_prim prim -> addValue (ValueMeta.expr e) (V_Prim prim))
     | Texp_constant _ -> ()
     | Texp_let (_, _, exp) -> addValue (ValueMeta.expr e) (Value.expr exp)
     | Texp_function {arg_label; param; cases; partial} ->
-      cases |> List.iter (fun case -> initBind case.c_lhs case.c_rhs);
-      let ids =
-        cases
-        |> List.map (fun case -> {pat = case.c_lhs; exp_id = exprId case.c_rhs})
-      in
-      addValue (ValueMeta.expr e) (V_Fn (param, ids))
+      addValue (ValueMeta.expr e) (V_Fn (Expr.toId e, param))
     | Texp_apply (exp, args) -> (
       let args = args |> List.map snd in
       match args with
       | Some hd :: tl ->
-        Current.applications
-        |> Reductions.add e.exp_loc
-             (Reduce (exprId exp, exprId hd, tl |> List.map (Option.map exprId)))
-        |> ignore
+        addReduction (Expr.toId e)
+          (Reduce
+             (Expr.toId exp, Expr.toId hd, tl |> List.map (Option.map Expr.toId)))
       | None :: tl ->
         addValue (ValueMeta.expr e)
-          (V_PartialApp (exprId exp, tl |> List.map (Option.map exprId)))
+          (V_PartialApp (Expr.toId exp, tl |> List.map (Option.map Expr.toId)))
       | [] -> raise (RuntimeError "Unreachable: Empty apply"))
     | Texp_match (exp, cases, exn_cases, partial) ->
-      cases
+      cases @ exn_cases
       |> List.iter (fun case ->
              addValue (ValueMeta.expr e) (Value.expr case.c_rhs);
-             initBind case.c_lhs case.c_rhs)
+             initBind case.c_lhs exp)
     | Texp_try (exp, cases) ->
       addValue (ValueMeta.expr e) (Value.expr exp);
       cases
@@ -674,11 +687,12 @@ module ClosureAnalysis = struct
     | Texp_tuple exps ->
       exps
       |> List.iteri (fun i exp ->
-             addValue (ValueMeta.expr e) (V_Field (F_Tuple i, exp.exp_loc)))
+             addValue (ValueMeta.expr e) (V_Field (F_Tuple i, Expr.toId exp)))
     | Texp_construct (lid, cstr_desc, exps) ->
-      addValue (ValueMeta.expr e) (V_Cstr (cstr_desc, exps |> List.map exprId))
+      addValue (ValueMeta.expr e)
+        (V_Cstr (cstr_desc, exps |> List.map Expr.toId))
     | Texp_variant (label, Some exp) ->
-      addValue (ValueMeta.expr e) (V_Variant (label, exp.exp_loc))
+      addValue (ValueMeta.expr e) (V_Variant (label, Expr.toId exp))
     | Texp_record {fields; representation; extended_expression} ->
       fields
       |> Array.iter (fun (label_desc, label_def) ->
@@ -688,13 +702,13 @@ module ClosureAnalysis = struct
                | Kept t -> ()
                | Overridden (lid, fe) ->
                  addValue (ValueMeta.expr e)
-                   (V_Field (F_Record label_desc.lbl_name, fe.exp_loc)))
+                   (V_Field (F_Record label_desc.lbl_name, Expr.toId fe)))
              | Mutable -> (
                match label_def with
                | Kept t -> ()
                | Overridden (lid, fe) ->
                  addValue (ValueMeta.expr e)
-                   (V_Mutable (exprId fe, label_desc.lbl_name))))
+                   (V_Mutable (Expr.toId fe, label_desc.lbl_name))))
     | Texp_field _ -> ()
     | Texp_setfield (exp1, lid, ld, exp2) -> markSideEffect e
     | Texp_array _ -> ()
@@ -719,16 +733,18 @@ module ClosureAnalysis = struct
     {super with expr; value_binding}
 
   let update_transitivity vm =
-    let set = find vm in
-    match set with
+    (match vm with
+    | VM_Name (name, loc) when name = "f" -> print_string "asdF"
+    | _ -> ());
+    match find vm with
     | VS_Set s ->
       ValueSet.ElemSet.iter
         (fun v ->
           match v with
-          | V_Expr e ->
-            let set' = find (VM_Expr e) in
+          | V_Expr eid ->
+            let set' = find (VM_Expr eid) in
             addValueSet vm set'
-          | V_Var (name, loc) ->
+          | V_Name (name, loc) ->
             let set' = find (VM_Name (name, loc)) in
             addValueSet vm set'
           | _ -> ())
@@ -749,6 +765,7 @@ module ClosureAnalysis = struct
       markSideEffect e
 
   let rec patIsTop pat =
+    print_endline "############ patIsTop ##############";
     match pat.pat_desc with
     | Tpat_var (id, l) -> addValueSet (VM_Name (id.name, l.loc)) VS_Top
     | Tpat_alias (pat', id, l) ->
@@ -767,25 +784,68 @@ module ClosureAnalysis = struct
     | _ -> ()
 
   let rec stepBind pat expr =
+    print_endline "############ stepBind ##############";
+    Print.print_pattern pat;
+    print_newline ();
     match pat.pat_desc with
+    | Tpat_any -> ()
     | Tpat_var (id, l) -> addValue (VM_Name (id.name, l.loc)) (Value.expr expr)
     | Tpat_alias (pat', id, l) ->
       addValue (VM_Name (id.name, l.loc)) (Value.expr expr);
       stepBind pat' expr
+    | Tpat_constant _ -> ()
+    | Tpat_tuple pats -> (
+      match find (ValueMeta.expr expr) with
+      | VS_Top -> pats |> List.iter patIsTop
+      | VS_Set vs ->
+        vs
+        |> ValueSet.ElemSet.iter (function
+             | V_Field (F_Tuple i, eid) ->
+               stepBind (List.nth pats i) (Expr.fromId eid)
+             | _ -> ()))
     | Tpat_construct (lid, cstr_desc, pats) -> (
       match find (ValueMeta.expr expr) with
-      | VS_Top -> patIsTop pat
+      | VS_Top -> pats |> List.iter patIsTop
       | VS_Set vs ->
         vs
         |> ValueSet.ElemSet.iter (fun v ->
                match v with
                | V_Cstr (cstr_desc', eids) when cstr_desc = cstr_desc' ->
                  List.combine pats eids
-                 |> List.iter (fun (pat, eid) -> stepBind pat (exprOfId eid))
+                 |> List.iter (fun (pat, eid) -> stepBind pat (Expr.fromId eid))
                | _ -> ()))
-    | _ -> ()
+    | Tpat_variant (_, None, _) -> ()
+    | Tpat_variant (lbl, Some pat, _) -> (
+      match find (ValueMeta.expr expr) with
+      | VS_Top -> patIsTop pat
+      | VS_Set vs ->
+        vs
+        |> ValueSet.ElemSet.iter (function
+             | V_Variant (lbl', eid) when lbl = lbl' ->
+               stepBind pat (Expr.fromId eid)
+             | _ -> ()))
+    | Tpat_record (fields, closed_flag) -> (
+      match find (ValueMeta.expr expr) with
+      | VS_Top -> fields |> List.iter (fun (_, _, pat) -> patIsTop pat)
+      | VS_Set vs ->
+        vs
+        |> ValueSet.ElemSet.iter (function
+             | V_Field (F_Record lbl, eid) ->
+               fields
+               |> List.iter (fun (lid, lbl_desc, pat) ->
+                      if lbl_desc.lbl_name = lbl then
+                        stepBind pat (Expr.fromId eid))
+             | _ -> ()))
+    | Tpat_or (pat1, pat2, _) ->
+      stepBind pat1 expr;
+      stepBind pat2 expr
+    | Tpat_array _ -> () (* TODO: array *)
+    | Tpat_lazy _ -> ()
 
   let stepExpr e =
+    print_endline "############ stepExpr ##############";
+    print_endline (string_of_loc e.exp_loc);
+    Print.print_expression 0 e;
     match e.exp_desc with
     | Texp_let (ref_flag, vbs, exp) ->
       let valueBindingsHaveSideEffect =
@@ -797,8 +857,10 @@ module ClosureAnalysis = struct
       if valueBindingsHaveSideEffect || exp |> Current.hasSideEffect then
         markSideEffect e
     | Texp_apply _ ->
-      Current.applications |> Reductions.find e.exp_loc |> ReductionSet.elements
+      print_endline "@@@@@@@@@@@@@@@@@@@@@ Texp_apply @@@@@@@@@@@@@@@";
+      Current.applications |> Reductions.find (Expr.toId e) |> ReductionSet.elements
       |> List.iter (fun app ->
+             print_endline "@@@@@@@@@@@@@@@@@@@@@ reduce @@@@@@@@@@@@@@@";
              match app with
              | Reduce (eid, arg, tl) -> (
                match find (VM_Expr eid) with
@@ -813,7 +875,15 @@ module ClosureAnalysis = struct
                             && (tl |> List.length) + 1 = prim.prim_arity
                           then resolvePrimApp prim e app
                           else ()
-                        | V_Fn (param, bodies) -> (
+                        | V_Fn (eid, param) -> (
+                          let bodies = bodyOfFunction eid in
+                          print_endline
+                            "@@@@@@@@@@@@@@@@@@@@@ V_FN @@@@@@@@@@@@@@@";
+                          Print.print_ident param;
+                          print_newline ();
+                          bodies
+                          |> List.iter (fun body ->
+                                 stepBind body.pat (Expr.fromId arg));
                           match tl with
                           | [] ->
                             bodies
@@ -823,7 +893,7 @@ module ClosureAnalysis = struct
                           | Some arg' :: tl' ->
                             bodies
                             |> List.iter (fun body ->
-                                   addReduction e.exp_loc
+                                   addReduction (Expr.toId e)
                                      (Reduce (body.exp_id, arg', tl')))
                           | None :: tl' ->
                             bodies
@@ -833,10 +903,24 @@ module ClosureAnalysis = struct
                         | _ -> ())))
     | Texp_match (exp, cases, exn_cases, partial) ->
       cases |> List.iter (fun case -> stepBind case.c_lhs exp)
-    | Texp_field (exp, lid, ld) ->
-      let set = find (ValueMeta.expr exp) in
-      (* TODO *)
-      ()
+    | Texp_field (exp, lid, ld) -> (
+      match find (ValueMeta.expr exp) with
+      | VS_Top -> ()
+      | VS_Set vs ->
+        vs
+        |> ValueSet.ElemSet.iter (function
+             | V_Field (f, eid) when Field.F_Record ld.lbl_name = f ->
+               addValue (ValueMeta.expr exp) (V_Expr eid)
+             | _ -> ()))
+    | Texp_setfield (exp1, lid, ld, exp2) -> (
+      match find (ValueMeta.expr exp1) with
+      | VS_Top -> ()
+      | VS_Set vs ->
+        vs
+        |> ValueSet.ElemSet.iter (function
+             | V_Mutable (eid, f) when ld.lbl_name = f ->
+               addValue (VM_Mutable (eid, f)) (Value.expr exp2)
+             | _ -> ()))
     | Texp_function {arg_label; param; cases; partial} ->
       let bodyHasSideEffect =
         cases
@@ -871,26 +955,28 @@ module ClosureAnalysis = struct
       stepExpr e;
       super.expr self e
     in
-    {super with expr}
-
-  let runExpr e =
-    e |> traverseExpr (fun e -> initExpr e);
-    updated := true;
-    while !updated do
-      updated := false;
-      Current.graph.nodes |> VMSet.iter (fun vm -> update_transitivity vm);
-      e |> traverseExpr (fun e -> stepExpr e)
-    done
+    let value_binding self vb =
+      stepBind vb.vb_pat vb.vb_expr;
+      super.value_binding self vb
+    in
+    {super with expr; value_binding}
 
   let runStructures strs =
+    print_endline "############ closure init ##############";
     strs |> List.iter (fun str -> initMapper.structure initMapper str |> ignore);
     updated := true;
+    let counter = ref 0 in
+    print_endline "############ closure step ##############";
     while !updated do
+      counter := !counter + 1;
+      Printf.printf "step %d" !counter;
+      print_newline ();
       updated := false;
       Current.graph.nodes |> VMSet.iter (fun vm -> update_transitivity vm);
       strs
       |> List.iter (fun str -> stepMapper.structure stepMapper str |> ignore)
-    done
+    done;
+    print_endline "############ closure end ##############"
 end
 
 let collectValueMetaExpr e =
@@ -1003,7 +1089,8 @@ module ValueDependency = struct
       addEdge (ValueMeta.expr e) (ValueMeta.expr exp) Func.id
     | Texp_function _ -> ()
     | Texp_apply (exp, args) ->
-      Current.applications |> Reductions.find e.exp_loc |> ReductionSet.elements
+      addEdge (ValueMeta.expr e) (ValueMeta.expr exp) (Func.ifnotbot Live.Top);
+      Current.applications |> Reductions.find (Expr.toId e) |> ReductionSet.elements
       |> List.iter (fun app ->
              let (Reduce (eid, arg, tl)) = app in
              match Current.closure |> Closure.find (VM_Expr eid) with
@@ -1017,14 +1104,15 @@ module ValueDependency = struct
                           tl |> List.for_all Option.is_some
                           && (tl |> List.length) + 1 = prim.prim_arity
                         then collectPrimApp prim e app
-                      | V_Fn (param, bodies) ->
+                      | V_Fn (eid, param) ->
+                        let bodies = bodyOfFunction eid in
                         addEdge (ValueMeta.expr e) (VM_Expr eid)
                           (Func.ifnotbot Live.Top);
                         bodies
                         |> List.iter (fun body ->
                                addEdge (ValueMeta.expr e) (VM_Expr body.exp_id)
                                  Func.id;
-                               collectBind body.pat (exprOfId arg) Func.id)
+                               collectBind body.pat (Expr.fromId arg) Func.id)
                       | _ -> ()))
     | Texp_match (exp, cases, exn_cases, _) ->
       cases @ exn_cases
@@ -1037,7 +1125,7 @@ module ValueDependency = struct
              | None -> ());
       let cond_base =
         cases
-        |> List.map (fun case -> Live.baseFromPattern case.c_lhs)
+        |> List.map (fun case -> Live.controlledByPat case.c_lhs)
         |> List.fold_left Live.join Live.Bot
       in
       cases |> List.iter (fun case -> collectBind case.c_lhs exp Func.id);
@@ -1080,7 +1168,7 @@ module ValueDependency = struct
     | Texp_field (exp, lid, ld) ->
       addEdge (ValueMeta.expr e) (ValueMeta.expr exp)
         (Live.field (F_Record ld.lbl_name))
-    | Texp_setfield (exp1, lid, label_desc, exp2) -> () (* TODO *)
+    | Texp_setfield (exp1, lid, label_desc, exp2) -> () (* FIXME *)
     | Texp_array exps ->
       exps
       |> List.iter (fun exp ->
@@ -1110,109 +1198,22 @@ module ValueDependency = struct
     {super with expr; value_binding}
 end
 
-let processExpression (e : CL.Typedtree.expression) =
-  if !Common.Cli.debug then (
-    print_newline ();
-    print_endline "===== Analyze ===== ";
-    CL.Location.print_loc Format.std_formatter e.exp_loc;
-    print_endline Log_.Color.reset_lit;
-    Print.print_expression 0 e;
-    print_newline ());
-  (* Preprocessing *)
-  Current.reset ();
-  e |> traverseExpr (fun e -> Hashtbl.add eidToExpr (exprId e) e);
-  Current.graph.nodes <- collectValueMetaExpr e;
-  if !Common.Cli.debug then (
-    print_string "nodes: ";
-    Current.graph.nodes |> VMSet.elements |> print_list ValueMeta.print ", ";
-    print_newline ());
-  Current.liveness |> Liveness.init (Current.graph.nodes |> VMSet.to_seq);
-  (* Closure Analysis *)
-  ClosureAnalysis.runExpr e;
-  if !Common.Cli.debug then (
-    print_endline "\n### Closure Analysis ###";
-    Current.closure |> Closure.print;
-    print_endline "\n### Reductions ###";
-    Current.applications
-    |> Hashtbl.iter (fun k _ ->
-           Printf.printf "Expr(%s): " (string_of_loc k);
-           Current.applications |> Reductions.find k |> ReductionSet.elements
-           |> print_list
-                (function
-                  | Reduce (eid, eid2, args) ->
-                    Printf.printf "App(%s,[" (string_of_loc eid);
-                    Some eid2 :: args
-                    |> print_list
-                         (fun arg ->
-                           match arg with
-                           | None -> print_string "-"
-                           | Some eid -> print_string (string_of_loc eid))
-                         ",";
-                    print_string "])")
-                ", ";
-           print_newline ()));
-  (* live values by side effect *)
-  e |> traverseExpr Current.markValuesAffectSideEffect;
-  (* values dependencies *)
-  (* print_endline "\n### Make value dependencies ###"; *)
-  e |> traverseExpr ValueDependency.collectExpr;
-  (* Tracking liveness *)
-  let dag = Graph.scc Current.graph in
-  if !Common.Cli.debug then (
-    print_endline "\n### Track liveness ###";
-    print_endline "* Topological order:";
-    dag
-    |> List.iter (fun nodes ->
-           nodes |> print_list ValueMeta.print ", ";
-           print_newline ()));
-  let dependentsLives node =
-    let dependents = Hashtbl.find_all Current.graph.adj_rev node in
-    dependents
-    |> List.fold_left
-         (fun acc (dep, f) ->
-           Current.liveness |> Liveness.get dep |> f |> Live.join acc)
-         Live.Bot
-  in
-  dag
-  |> List.iter (fun nodes ->
-         match nodes with
-         | [] -> raise (RuntimeError "Empty SCC")
-         | [node] ->
-           (* ValueMeta.print node; *)
-           Current.liveness |> Liveness.join node (dependentsLives node)
-         | _ ->
-           nodes
-           |> List.iter (fun node ->
-                  Current.liveness |> Liveness.join node Live.Top)
-         (* nodes |> List.iter (fun node -> Current.liveness |> Liveness.meet node (dependentsLives node)); *));
-  (* Log dead values *)
-  if !Common.Cli.debug then (
-    print_endline "\n### Liveness, SideEffect ###";
-    Current.liveness
-    |> Hashtbl.iter (fun k v ->
-           ValueMeta.print k;
-           print_string ": ";
-           Live.print v;
-           (match k with
-           | VM_Expr eid ->
-             if !Current.sideEffectSet |> ExprIdSet.mem eid then
-               print_string ", φ"
-           | _ -> ());
-           print_newline ()));
-  print_endline "\n### Dead Codes ###";
-  ()
-
 let preprocessMapper =
   let super = CL.Tast_mapper.default in
   let expr self e =
-    Hashtbl.add eidToExpr (exprId e) e;
-    super.expr self e
+    let e = super.expr self e in
+    let e = Expr.preprocess e in
+    preprocessFunction e;
+    e
   in
   {super with expr}
 
+(* collect structures from cmt *)
+let cmtStructures : structure list ref = ref []
+
 let preprocessStructure (structure : CL.Typedtree.structure) =
+  let structure = preprocessMapper.structure preprocessMapper structure in
   cmtStructures := structure :: !cmtStructures;
-  preprocessMapper.structure preprocessMapper structure |> ignore;
   let mapper =
     traverseValueMetaMapper (fun vm ->
         Current.graph.nodes <- VMSet.add vm Current.graph.nodes)
@@ -1222,28 +1223,31 @@ let preprocessStructure (structure : CL.Typedtree.structure) =
   ()
 
 let reportDead ppf =
+  print_endline "############ reportDead ##############";
   (* init liveness *)
+  print_endline "############ init liveness ##############";
   Current.liveness |> Liveness.init (Current.graph.nodes |> VMSet.to_seq);
   (* closure analysis *)
+  print_endline "############ closure analysis ##############";
   !cmtStructures |> ClosureAnalysis.runStructures;
   if !Common.Cli.debug then (
     print_endline "\n### Closure Analysis ###";
     Current.closure |> Closure.print;
     print_endline "\n### Reductions ###";
     Current.applications
-    |> Hashtbl.iter (fun k _ ->
-           Printf.printf "Expr(%s): " (string_of_loc k);
-           Current.applications |> Reductions.find k |> ReductionSet.elements
-           |> print_list
+    |> Hashtbl.iter (fun eid _ ->
+        Printf.printf "Expr(%s): " eid;
+           Current.applications |> Reductions.find eid |> ReductionSet.elements
+           |> Print.print_list
                 (function
                   | Reduce (eid, eid2, args) ->
-                    Printf.printf "App(%s,[" (string_of_loc eid);
+                      Printf.printf "App(%s,[" eid;
                     Some eid2 :: args
-                    |> print_list
+                    |> Print.print_list
                          (fun arg ->
                            match arg with
                            | None -> print_string "-"
-                           | Some eid -> print_string (string_of_loc eid))
+                           | Some eid -> print_string eid)
                          ",";
                     print_string "])")
                 ", ";
@@ -1259,16 +1263,20 @@ let reportDead ppf =
   in
   !cmtStructures |> List.iter (fun str -> mapper.structure mapper str |> ignore);
   (* values dependencies *)
+  print_endline
+    "######################## Value Dependency #####################";
   let mapper = ValueDependency.collectMapper in
   !cmtStructures |> List.iter (fun str -> mapper.structure mapper str |> ignore);
   (* tracking liveness *)
+  print_endline
+    "######################## Tracking Liveness #####################";
   let dag = Graph.scc Current.graph in
   if !Common.Cli.debug then (
     print_endline "\n### Track liveness ###";
     print_endline "* Topological order:";
     dag
     |> List.iter (fun nodes ->
-           nodes |> print_list ValueMeta.print ", ";
+           nodes |> Print.print_list ValueMeta.print ", ";
            print_newline ()));
   let dependentsLives node =
     let dependents = Hashtbl.find_all Current.graph.adj_rev node in
