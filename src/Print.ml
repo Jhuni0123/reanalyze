@@ -40,7 +40,7 @@ let print_ident (id: CL.Ident.t) =
 let rec print_pattern pat =
     match pat.pat_desc with
     | Tpat_any -> ps "_"
-    | Tpat_var (id, loc) -> print_ident id; print_loc loc.loc
+    | Tpat_var (id, loc) -> print_ident id; ps "@"; print_loc loc.loc
     | Tpat_alias (pat, id, loc) -> print_pattern pat; ps " as "; print_ident id
     | Tpat_constant _ -> ps "Tpat_constant"
     | Tpat_tuple (pats) ->
@@ -82,6 +82,20 @@ and print_path (p: CL.Path.t) =
     | Pdot (p, s, i) -> print_path p; ps "."; ps s; ps "_"; print_int i;
     | Papply (p1, p2) -> print_path p1; ps "("; print_path p2; ps ")";
 
+and print_module_expr me =
+  (match me.mod_desc with
+  | Tmod_ident (path, lid) -> ps "Tmod_ident "; print_path path; print_lident lid.txt; print_newline ()
+  | Tmod_structure s -> print_structure s
+  | Tmod_functor _ -> pe "Tmod_functor"
+  | Tmod_apply (me1, me2, mc) ->
+      pe "Tmod_apply";
+      print_module_expr me1;
+      print_module_expr me2
+  | Tmod_constraint (me', _, _, _) -> pe "Tmod_constraint";
+  print_module_expr me'
+  | Tmod_unpack _ -> pe "Tmod_unpack"
+  )
+
 and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
     if p then ps "(";
     (match expr.exp_desc with
@@ -112,15 +126,9 @@ and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
             pi i; print_expression i exp;
     | Texp_function ({arg_label; param; cases; partial}) ->
             (* CL.Location.print_loc Format.std_formatter  expr.exp_loc; *)
-            ps "fun ";
-            (match arg_label with
-            | Nolabel -> ()
-            | Labelled lb -> ps "~"; ps lb; ps ":"
-            | Optional lb -> ps "?"; ps lb; ps":"
-            );
-            print_ident param;
-            ps " -> match "; print_ident param; ps " with ";
+            ps "function ";
             cases |> print_list (fun case ->
+                ps "| ";
                 print_pattern case.c_lhs;
                 ps " -> ";
                 print_expression i case.c_rhs
@@ -183,11 +191,11 @@ and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
             ps "ARRAY (";
             exps |> print_list (print_expression 0) ", ";
             ps ")"
-    | Texp_ifthenelse (exp_cond, exp_then, expo_else) -> ()
+    | Texp_ifthenelse (exp_cond, exp_then, expo_else) -> ps "IFTHENELSE()"
     | Texp_sequence (exp1, exp2) ->
             print_expression (i) exp1; pe ";";
             pi i; print_expression (i) exp2
-    | Texp_while (exp_cond, exp_body) -> ()
+    | Texp_while (exp_cond, exp_body) -> ps "WHILE()"
     | Texp_for (id, pat, exp_start, exp_end, dir, exp_body) ->
         ps "for "; print_ident id; print_loc pat.ppat_loc;
         ps " in ";
@@ -196,23 +204,37 @@ and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
         pi (i+1);print_expression (i+1) exp_body;
         print_newline ();
         pi i;pe "done";
-    | Texp_send (exp, meth, expo) -> ()
+    | Texp_send (exp, Tmeth_name meth, Some arg) ->
+        ps "SEND(";
+        pi (i+1);print_expression (i+1) exp;
+        ps ",";
+        print_expression (i+1) arg;
+        ps ")"
+    | Texp_send (exp, Tmeth_name meth, None) ->
+        ps "SEND(";
+        pi (i+1);print_expression (i+1) exp;
+        ps ",";
+        ps meth;
+        ps ")"
     | Texp_new () -> ()
     | Texp_instvar () -> ()
     | Texp_setinstvar () -> ()
     | Texp_override () -> ()
-    | Texp_letmodule (id, loc, mod_exp, exp) -> print_expression i exp
-    | Texp_letexception (ext_cons, exp) -> ()
-    | Texp_assert (exp) -> ()
-    | Texp_lazy (exp) -> ()
+    | Texp_letmodule (id, loc, mod_exp, exp) ->
+        print_module_expr mod_exp;
+        print_newline ();
+        print_expression i exp
+    | Texp_letexception (ext_cons, exp) -> ps "LETEXCEPTION()"
+    | Texp_assert (exp) -> ps "ASSERT()"
+    | Texp_lazy (exp) -> ps "LAZY()"
     | Texp_object () -> ()
-    | Texp_pack (mod_exp) -> ()
+    | Texp_pack (mod_exp) -> ps "PACK()"
     | Texp_unreachable -> ()
-    | Texp_extension_constructor (lid, path) -> ()
+    | Texp_extension_constructor (lid, path) -> ps "EXT_CONSTRUCT()"
     );
     if p then ps ")"
 
-let print_structure_item (structure_item: CL.Typedtree.structure_item) =
+and print_structure_item (structure_item: CL.Typedtree.structure_item) =
     match structure_item.str_desc with
     | Tstr_eval (exp, attr) ->
             pe "# Structure - eval";
@@ -225,9 +247,36 @@ let print_structure_item (structure_item: CL.Typedtree.structure_item) =
             ps (str_rec_flag rec_flag);
             vbs |> List.iter (print_value_binding 0);
             pn ()
-    | _ -> ()
+    | Tstr_primitive _ ->
+        pe "# Structure - primitive"
+    | Tstr_type _ ->
+        pe "# Structure - type"
+    | Tstr_typext _ ->
+        pe "# Structure - typext"
+    | Tstr_exception _ ->
+        pe "# Structure - exception"
+    | Tstr_module m ->
+        pe "# Structure - module";
+        pe m.mb_name.txt;
+        print_module_expr m.mb_expr
+    | Tstr_recmodule _ ->
+        pe "# Structure - recmodule"
+    | Tstr_open desc ->
+        pe "# Structure - open";
+        print_lident desc.open_txt.txt;
+        pn ()
+    | Tstr_class _ ->
+        pe "# Structure - class"
+    | Tstr_class_type _ ->
+        pe "# Structure - class type"
+    | Tstr_include _ ->
+        pe "# Structure - include"
+    | Tstr_attribute _ ->
+        pe "# Structure - attribute"
+    | Tstr_modtype _ ->
+        pe "# Structure - modtype"
 
-let print_structure structure = structure.str_items |> List.iter print_structure_item
+and print_structure structure = structure.str_items |> List.iter print_structure_item
 
 let rec print_type (t: type_expr) =
     match t.desc with
