@@ -13,8 +13,10 @@ module Id = struct
   let createTopLevelModuleId modname : t =
     ("+", {name = modname; stamp = 0; flags = 0})
 
-  let ident id = snd id
-  let ctx id = fst id
+  let ident (id: t) = snd id
+  let ctx (id: t) = fst id
+
+  let name id = id |> ident |> CL.Ident.name
 
   let hash id =
     CL.Ident.hash (snd id)
@@ -26,29 +28,36 @@ module Id = struct
 
   let equal a b =
     String.equal (ctx a) (ctx b) && CL.Ident.equal (ident a) (ident b)
+
+  let print (id: t) =
+    Printf.printf "[%s]%s" (ctx id) (name id)
 end
 
 module ModuleEnv = struct
-  module IdTbl = Hashtbl.Make (CL.Ident)
-  type t = (string, CL.Ident.t) Hashtbl.t IdTbl.t
+  module IdTbl = Hashtbl.Make (Id)
+  type t = (string, Id.t) Hashtbl.t IdTbl.t
 
   let create (): t =
     IdTbl.create 10
 
-  let addMember (parent: CL.Ident.t) (child: CL.Ident.t) env =
+  let addMember (parent: Id.t) (child: Id.t) env =
     match IdTbl.find_opt env parent with
     | Some tbl ->
         (* if not (Hashtbl.mem tbl (CL.Ident.name child)) then *)
-          Hashtbl.add tbl (CL.Ident.name child) child
+          Hashtbl.add tbl (Id.name child) child
     | None ->
         let tbl = Hashtbl.create 10 in
-        Hashtbl.add tbl (CL.Ident.name child) child;
+        Hashtbl.add tbl (Id.name child) child;
         IdTbl.add env parent tbl
 
-  let findIdents (path: CL.Path.t) (env: t) =
-    let rec _findIdents (p: CL.Path.t) =
+  let resolvePath currentMod (path: CL.Path.t) (env: t): Id.t list =
+    let rec _findIdents (p: CL.Path.t): Id.t list =
       match p with
-      | Pident id -> [id]
+      | Pident id ->
+          (match CL.Ident.persistent id with
+          | true -> [Id.createTopLevelModuleId (CL.Ident.name id)]
+          | false -> [Id.create currentMod id]
+          )
       | Pdot (sub, name, _) -> (
         let parents = _findIdents sub in
         parents |> List.map (fun parent -> 
@@ -63,15 +72,14 @@ module ModuleEnv = struct
 
   let print (env: t) =
     env |> IdTbl.iter (fun id tbl ->
-      Print.print_ident id;
+      Id.print id;
       print_endline ":";
       tbl |> Hashtbl.iter (fun name id' ->
         print_string ("  " ^ name ^ ": ");
-        Print.print_ident id';
+        Id.print id';
         print_newline ();
       )
     )
-
 end
 
 (* Expression ID mapping *)
@@ -137,7 +145,7 @@ module ValueMeta = struct
   type t =
     | VM_Expr of Expr.id
     | VM_Mutable of Expr.id * string
-    | VM_Name of CL.Ident.t
+    | VM_Name of Id.t
 
   let expr e = VM_Expr (Expr.toId e)
   let compare = compare
@@ -146,8 +154,8 @@ module ValueMeta = struct
     match vm with
     | VM_Expr eid -> Printf.printf "Expr(%s,%s)" eid (eid |> Expr.fromId |> Expr.origLoc |> string_of_loc)
     | VM_Mutable (et, s) -> Printf.printf "Mut(%s)" s
-    | VM_Name (name) ->
-        print_string "Name("; Print.print_ident name; 
+    | VM_Name id ->
+        print_string "Name("; Id.print id; 
       Printf.printf ")"
 
   let shouldReport vm =
@@ -170,7 +178,7 @@ module ValueMeta = struct
       | VM_Expr eid ->
           ""
       | VM_Mutable _ -> "<memory>"
-      | VM_Name (name) -> CL.Ident.name name
+      | VM_Name id -> Id.name id
     in
     if shouldReport vm then (
       Log_.warning ~loc ~name:"Warning Dead Value" (fun ppf () ->
@@ -180,8 +188,8 @@ module ValueMeta = struct
             Format.fprintf ppf "\n";
             Print.print_expression 0 e
         | VM_Mutable _ ->  Format.fprintf ppf "<mutable field>"
-        | VM_Name (name) ->
-            Format.fprintf ppf "%s" (CL.Ident.name name);
+        | VM_Name id ->
+            Format.fprintf ppf "%s" (Id.name id)
       );
     )
 end
@@ -198,7 +206,7 @@ module Value = struct
   type t =
     | V_Expr of Expr.id
     | V_Mutable of Expr.id * string
-    | V_Name of CL.Ident.t * CL.Location.t (* except primitive *)
+    | V_Name of Id.t (* except primitive *)
     | V_Prim of CL.Primitive.description
     | V_Cstr of constructor_description * Expr.id list
     | V_Variant of string * Expr.id
@@ -210,7 +218,7 @@ module Value = struct
 
   let compare a b =
     match a, b with
-    | V_Name (id1, _), V_Name (id2, _) -> CL.Ident.compare id1 id2
+    | V_Name id1, V_Name id2 -> Id.compare id1 id2
     | _ -> compare a b
 
   let expr e = V_Expr (Expr.toId e)
@@ -219,7 +227,7 @@ module Value = struct
     match v with
     | V_Expr eid -> Printf.printf "Expr(%s)" eid
     | V_Mutable (et, s) -> Printf.printf "Mut(%s)" s
-    | V_Name (name, loc) -> Printf.printf "Name(%s,%s)" (CL.Ident.name name) (string_of_loc loc)
+    | V_Name id -> Printf.printf "Name(%s)" (Id.name id)
     | V_Prim prim -> Printf.printf "Prim(%s)" prim.prim_name
     | V_Cstr (cstr_desc, eids) ->
       Printf.printf "Cstr-%s(" cstr_desc.cstr_name;
@@ -639,6 +647,7 @@ module Graph = struct
 end
 
 module Current = struct
+  let cmtModName : string ref = ref ""
   let closure : Closure.t = Hashtbl.create 256
   let sideEffectSet : ExprIdSet.t ref = ref ExprIdSet.empty
   let liveness : Liveness.t = Hashtbl.create 256
@@ -685,7 +694,7 @@ module Current = struct
         liveness |> Liveness.join (ValueMeta.expr exp1) Live.Top
     | Texp_for (id, pat, exp1, exp2, direction_flag, exp3) ->
       if exp3 |> hasSideEffect then
-        liveness |> Liveness.join (VM_Name (id)) Live.Top
+        liveness |> Liveness.join (VM_Name (Id.create !cmtModName id)) Live.Top
     | Texp_match (exp, cases, exn_cases, partial) ->
       let casesHasSideEffect =
         cases
@@ -716,14 +725,14 @@ let traverseValueMetaMapper f =
   let expr self e =
     f (ValueMeta.expr e);
     (match e.exp_desc with
-    | Texp_for (id, ppat, _, _, _, _) -> f (VM_Name (id))
+    | Texp_for (id, ppat, _, _, _, _) -> f (VM_Name (Id.create !Current.cmtModName id))
     | _ -> ());
     super.expr self e
   in
   let pat self p =
     (match p.pat_desc with
-    | Tpat_var (id, l) -> f (VM_Name (id))
-    | Tpat_alias (_, id, l) -> f (VM_Name (id))
+    | Tpat_var (id, l) -> f (VM_Name (Id.create !Current.cmtModName id))
+    | Tpat_alias (_, id, l) -> f (VM_Name (Id.create !Current.cmtModName id))
     | _ -> ());
     super.pat self p
   in
@@ -754,9 +763,9 @@ module ClosureAnalysis = struct
 
   let rec initBind pat e =
     match pat.pat_desc with
-    | Tpat_var (id, l) -> addValue (VM_Name (id)) (Value.expr e)
+    | Tpat_var (id, l) -> addValue (VM_Name (Id.create !Current.cmtModName id)) (Value.expr e)
     | Tpat_alias (pat', id, l) ->
-      addValue (VM_Name (id)) (Value.expr e);
+      addValue (VM_Name (Id.create !Current.cmtModName id)) (Value.expr e);
       initBind pat' e
     | _ -> ()
 
@@ -767,13 +776,13 @@ module ClosureAnalysis = struct
     | Texp_ident (path, lid, vd) -> (
       match vd.val_kind with
       | Val_reg -> (
-          match Current.env |> ModuleEnv.findIdents path with
+          match Current.env |> ModuleEnv.resolvePath !Current.cmtModName path with
           | [] -> addValueSet (ValueMeta.expr e) VS_Top
           | ids ->
               ids |> List.iter (fun id ->
                 let vm = VM_Name (id) in
                 if Current.graph.nodes |> VMSet.mem vm then
-                  addValue (ValueMeta.expr e) (V_Name (id, vd.val_loc))
+                  addValue (ValueMeta.expr e) (V_Name id)
                 else
                   addValueSet (ValueMeta.expr e) VS_Top
               )
@@ -865,8 +874,8 @@ module ClosureAnalysis = struct
           | V_Expr eid ->
             let set' = find (VM_Expr eid) in
             addValueSet vm set'
-          | V_Name (name, loc) ->
-            let set' = find (VM_Name (name)) in
+          | V_Name id ->
+            let set' = find (VM_Name id) in
             addValueSet vm set'
           | _ -> ())
         s
@@ -888,9 +897,9 @@ module ClosureAnalysis = struct
 
   let rec patIsTop pat =
     match pat.pat_desc with
-    | Tpat_var (id, l) -> addValueSet (VM_Name (id)) VS_Top
+    | Tpat_var (id, l) -> addValueSet (VM_Name (Id.create !Current.cmtModName id)) VS_Top
     | Tpat_alias (pat', id, l) ->
-      addValueSet (VM_Name (id)) VS_Top;
+      addValueSet (VM_Name (Id.create !Current.cmtModName id)) VS_Top;
       patIsTop pat'
     | Tpat_or (pat1, pat2, _) ->
       patIsTop pat1;
@@ -907,9 +916,9 @@ module ClosureAnalysis = struct
   let rec stepBind pat expr =
     match pat.pat_desc with
     | Tpat_any -> ()
-    | Tpat_var (id, l) -> addValue (VM_Name (id)) (Value.expr expr)
+    | Tpat_var (id, l) -> addValue (VM_Name (Id.create !Current.cmtModName id)) (Value.expr expr)
     | Tpat_alias (pat', id, l) ->
-      addValue (VM_Name (id)) (Value.expr expr);
+      addValue (VM_Name (Id.create !Current.cmtModName id)) (Value.expr expr);
       stepBind pat' expr
     | Tpat_constant _ -> ()
     | Tpat_tuple pats -> (
@@ -1084,7 +1093,10 @@ module ClosureAnalysis = struct
 
   let runStructures strs =
     print_endline "############ closure init ##############";
-    strs |> List.iter (fun str -> initMapper.structure initMapper str |> ignore);
+    strs |> List.iter (fun (modname, str) ->
+      Current.cmtModName := modname;
+      initMapper.structure initMapper str |> ignore
+    );
     updated := true;
     let counter = ref 0 in
     print_endline "############ closure step ##############";
@@ -1095,7 +1107,10 @@ module ClosureAnalysis = struct
       updated := false;
       Current.graph.nodes |> VMSet.iter (fun vm -> update_transitivity vm);
       strs
-      |> List.iter (fun str -> stepMapper.structure stepMapper str |> ignore)
+      |> List.iter (fun (modname, str) ->
+          Current.cmtModName := modname;
+          stepMapper.structure stepMapper str |> ignore
+      )
     done;
     print_endline "############ closure end ##############"
 end
@@ -1105,7 +1120,7 @@ let traverseTopMostExprMapper (f : expression -> bool) =
   let expr self e = if f e then e else super.expr self e in
   {super with expr}
 
-let collectDeadValues strs =
+let collectDeadValues cmts =
   let deads = ref VMSet.empty in
   let isDeadExpr e =
     let isDead =
@@ -1116,7 +1131,7 @@ let collectDeadValues strs =
     isDead
   in
   let mapper = traverseTopMostExprMapper isDeadExpr in
-  strs |> List.iter (fun str -> mapper.structure mapper str |> ignore);
+  cmts |> List.iter (fun (modname, str) -> mapper.structure mapper str |> ignore);
   Current.graph.nodes
   |> VMSet.iter (fun vm ->
          match vm with
@@ -1157,9 +1172,9 @@ module ValueDependency = struct
   let rec collectBind pat expr (f : Live.t -> Live.t) =
     match pat.pat_desc with
     | Tpat_var (id, l) ->
-      addEdge (VM_Name (id)) (ValueMeta.expr expr) f
+      addEdge (VM_Name (Id.create !Current.cmtModName id)) (ValueMeta.expr expr) f
     | Tpat_alias (pat, id, l) ->
-      addEdge (VM_Name (id)) (ValueMeta.expr expr) f;
+      addEdge (VM_Name (Id.create !Current.cmtModName id)) (ValueMeta.expr expr) f;
       collectBind pat expr f
     | Tpat_tuple pats ->
       pats
@@ -1190,7 +1205,7 @@ module ValueDependency = struct
   let collectExpr e =
     match e.exp_desc with
     | Texp_ident (path, lid, vd) -> (
-        match Current.env |> ModuleEnv.findIdents path with
+        match Current.env |> ModuleEnv.resolvePath !Current.cmtModName path with
         | [] -> ()
         | ids -> ids |> List.iter (fun id -> 
           addEdge (ValueMeta.expr e)
@@ -1301,8 +1316,8 @@ module ValueDependency = struct
       addEdge (ValueMeta.expr e) (ValueMeta.expr exp2) Func.id
     | Texp_while _ -> ()
     | Texp_for (id, ppat, exp1, exp2, dir_flag, exp_body) ->
-      addEdge (VM_Name (id)) (ValueMeta.expr exp1) Func.id;
-      addEdge (VM_Name (id)) (ValueMeta.expr exp2) Func.id
+      addEdge (VM_Name (Id.create !Current.cmtModName id)) (ValueMeta.expr exp1) Func.id;
+      addEdge (VM_Name (Id.create !Current.cmtModName id)) (ValueMeta.expr exp2) Func.id
     | Texp_send (exp, meth, expo) ->
         addEdge (ValueMeta.expr e) (ValueMeta.expr exp) (Func.ifnotbot Live.Top)
     | _ -> ()
@@ -1339,15 +1354,17 @@ let rec processSignatureItem ~parent
   | Sig_value _ ->
     print_endline "Sig_value";
     let id, loc, kind, valType = si |> Compat.getSigValue in
-    Print.print_ident parent;
+    let id = Id.create (!Current.cmtModName) id in
+    Id.print parent;
     print_string " -> ";
-    Print.print_ident id;
+    Id.print id;
     print_newline();
     addChild parent id
   | Sig_module _-> (
     print_endline "Sig_module";
     match si |> Compat.getSigModuleModtype with
     | Some (id, moduleType, moduleLoc) ->
+        let id = Id.create (!Current.cmtModName) id in
         addChild parent id;
         getSignature moduleType
         |> List.iter 
@@ -1358,11 +1375,11 @@ let rec processSignatureItem ~parent
 let topLevelModuleId modname: CL.Ident.t =
   {name = modname; stamp=0; flags=0}
 
-let processSignature modname (signature : CL.Types.signature) =
+let processSignature (signature : CL.Types.signature) =
   signature
   |> List.iter (fun sig_item ->
          processSignatureItem
-           ~parent:(topLevelModuleId modname)
+           ~parent:(Id.createTopLevelModuleId !Current.cmtModName)
            sig_item)
 
 
@@ -1374,9 +1391,9 @@ let process_module_expr me mid =
 
 let rec bind_member mod_id (pat: pattern) =
   match pat.pat_desc with
-  | Tpat_var (id, _) -> addChild mod_id id
+  | Tpat_var (id, _) -> addChild mod_id (Id.create !Current.cmtModName id)
   | Tpat_alias (p, id, _) ->
-      addChild mod_id id;
+      addChild mod_id (Id.create !Current.cmtModName id);
       bind_member mod_id p
   | Tpat_tuple ps ->
       ps |> List.iter (bind_member mod_id)
@@ -1424,35 +1441,20 @@ let preprocessMapper =
   let module_binding self moduleBinding =
       Print.print_ident moduleBinding.mb_id;
       print_newline ();
+      let id = Id.create !Current.cmtModName moduleBinding.mb_id in
       let signature = getSignature moduleBinding.mb_expr.mod_type in
       signature |> List.iter (fun sig_item ->
-        processSignatureItem ~parent:moduleBinding.mb_id sig_item
+        processSignatureItem ~parent:id sig_item
       );
-      process_module_expr moduleBinding.mb_id moduleBinding.mb_expr;
+      process_module_expr id moduleBinding.mb_expr;
       super.module_binding self moduleBinding
   in
   {super with expr; module_binding}
 
 
 (* collect structures from cmt *)
-let targetCmtStructures : structure list ref = ref []
+let targetCmtStructures : (string * structure) list ref = ref []
 
-
-let processStructure modname (structure : CL.Typedtree.structure) =
-  print_endline "preprocessStructure";
-  print_endline modname;
-  Print.print_structure structure;
-  print_newline ();
-  structure.str_items |> List.iter (process_structure_item (topLevelModuleId modname));
-  let structure = preprocessMapper.structure preprocessMapper structure in
-  targetCmtStructures := structure :: !targetCmtStructures;
-  let mapper =
-    traverseValueMetaMapper (fun vm ->
-        Current.graph.nodes <- VMSet.add vm Current.graph.nodes)
-  in
-  mapper.structure mapper structure |> ignore;
-  (* let _ = Print.print_structure structure in *)
-  ()
 
 let reportDead ~ppf =
   print_endline "############ reportDead ##############";
@@ -1495,12 +1497,16 @@ let reportDead ~ppf =
     in
     {super with expr}
   in
-  !targetCmtStructures |> List.iter (fun str -> mapper.structure mapper str |> ignore);
+  !targetCmtStructures |> List.iter (fun (modname, str) ->
+    Current.cmtModName := modname;
+    mapper.structure mapper str |> ignore);
   (* values dependencies *)
   print_endline
     "######################## Value Dependency #####################";
   let mapper = ValueDependency.collectMapper in
-  !targetCmtStructures |> List.iter (fun str -> mapper.structure mapper str |> ignore);
+  !targetCmtStructures |> List.iter (fun (modname, str) ->
+    Current.cmtModName := modname;
+    mapper.structure mapper str |> ignore);
   (* tracking liveness *)
   print_endline
     "######################## Tracking Liveness #####################";
@@ -1554,11 +1560,28 @@ let reportDead ~ppf =
   |> List.iter (function vm -> vm |> ValueMeta.report ppf);
   print_newline ()
 
+let processCmtStructure modname (structure : CL.Typedtree.structure) =
+  print_endline "processCmtStructure";
+  print_endline modname;
+  Print.print_structure structure;
+  print_newline ();
+  structure.str_items |> List.iter (process_structure_item (Id.createTopLevelModuleId modname));
+  let structure = preprocessMapper.structure preprocessMapper structure in
+  targetCmtStructures := (modname, structure) :: !targetCmtStructures;
+  let mapper =
+    traverseValueMetaMapper (fun vm ->
+        Current.graph.nodes <- VMSet.add vm Current.graph.nodes)
+  in
+  mapper.structure mapper structure |> ignore;
+  (* let _ = Print.print_structure structure in *)
+  ()
+
 let processCmt (cmt_infos : CL.Cmt_format.cmt_infos) =
+  Current.cmtModName := cmt_infos.cmt_modname;
   (match cmt_infos.cmt_annots with
   | Interface signature ->
-    processSignature cmt_infos.cmt_modname signature.sig_type
+    processSignature signature.sig_type
   | Implementation structure ->
-    processSignature cmt_infos.cmt_modname structure.str_type;
-    processStructure cmt_infos.cmt_modname structure
+    processSignature structure.str_type;
+    processCmtStructure cmt_infos.cmt_modname structure
   | _ -> ())
