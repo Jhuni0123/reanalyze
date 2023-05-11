@@ -85,7 +85,10 @@ and print_path (p: CL.Path.t) =
 and print_module_expr me =
   (match me.mod_desc with
   | Tmod_ident (path, lid) -> ps "Tmod_ident "; print_path path; print_lident lid.txt; print_newline ()
-  | Tmod_structure s -> print_structure s
+  | Tmod_structure s ->
+      pe "Tmod_structure";
+      s.str_type |> List.iter print_signature_item;
+      print_structure s
   | Tmod_functor _ -> pe "Tmod_functor"
   | Tmod_apply (me1, me2, mc) ->
       pe "Tmod_apply";
@@ -101,14 +104,14 @@ and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
     (match expr.exp_desc with
     | Texp_ident (path, lid, vd) ->
             ps "[";print_path path;ps"]";
-            print_lident lid.txt;
-            ps";";
-            (match vd.val_kind with
-            | Val_reg -> ps "reg"
-            | Val_prim prim -> ps "prim ";ps prim.prim_name
-            );
-            ps";";
-            print_loc vd.val_loc
+            print_lident lid.txt
+            (* ps";"; *)
+            (* (match vd.val_kind with *)
+            (* | Val_reg -> ps "reg" *)
+            (* | Val_prim prim -> ps "prim ";ps prim.prim_name *)
+            (* ); *)
+            (* ps";"; *)
+            (* print_loc vd.val_loc *)
     | Texp_constant (constant) ->
             (match constant with
             | Const_int n -> print_int n
@@ -146,7 +149,9 @@ and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
                 | None -> ps "-"
                 | Some e -> print_expressionp 0 e
                 ) " "
-    | Texp_match (exp, cases, exc_cases, partial) -> ps "match"
+    | Texp_match (exp, cases, exc_cases, partial) ->
+        ps "match";
+        cases |> List.iter (fun case -> pn();print_pattern case.c_lhs; print_expression i case.c_rhs)
     | Texp_try (exp, cases) -> ps "try"
     | Texp_tuple (exps) -> ()
     | Texp_construct (lid, cons_desc, exps) ->
@@ -258,7 +263,7 @@ and print_structure_item (structure_item: CL.Typedtree.structure_item) =
     | Tstr_module m ->
         pe "# Structure - module";
         pe m.mb_name.txt;
-        print_module_expr m.mb_expr
+        print_module_expr m.mb_expr;
     | Tstr_recmodule _ ->
         pe "# Structure - recmodule"
     | Tstr_open desc ->
@@ -269,14 +274,28 @@ and print_structure_item (structure_item: CL.Typedtree.structure_item) =
         pe "# Structure - class"
     | Tstr_class_type _ ->
         pe "# Structure - class type"
-    | Tstr_include _ ->
-        pe "# Structure - include"
+    | Tstr_include include_decl ->
+        pe "# Structure - include";
+        print_module_expr include_decl.incl_mod
     | Tstr_attribute _ ->
         pe "# Structure - attribute"
-    | Tstr_modtype _ ->
-        pe "# Structure - modtype"
+    | Tstr_modtype mtd ->
+        pe "# Structure - modtype";
+
+and print_module_type (mt: module_type) =
+  match mt with
+  | Mty_signature signature ->
+      signature |> List.iter print_signature_item
+  | _ -> ()
 
 and print_structure structure = structure.str_items |> List.iter print_structure_item
+
+and print_signature_item signature_item =
+  match signature_item with
+  | Sig_value (id, vd) ->
+      print_ident id;
+      print_newline();
+  | _ -> ()
 
 let rec print_type (t: type_expr) =
     match t.desc with
@@ -284,7 +303,7 @@ let rec print_type (t: type_expr) =
     | Tvar (Some(s)) -> ps "Tvar "; ps s
     | Tarrow (arg_label, t1, t2, commutable) -> print_type t1; ps " -> "; print_type t2;
     | Ttuple ts -> ps "("; print_list print_type ", " ts; ps ")"
-    | Tconstr _ -> ps "Tconstr"
+    | Tconstr (path, _, _) -> ps "Tconstr("; print_path path; ps ")"
     | Tobject _ -> ps "Tobject"
     | Tfield _ -> ps "Tfield"
     | Tnil -> ps "Tnil"

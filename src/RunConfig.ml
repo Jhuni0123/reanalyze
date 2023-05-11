@@ -1,6 +1,7 @@
 type t = {
   mutable bsbProjectRoot : string;
   mutable dce : bool;
+  mutable dva : bool;
   mutable exception_ : bool;
   mutable noalloc : bool;
   mutable projectRoot : string;
@@ -13,6 +14,7 @@ let runConfig =
   {
     bsbProjectRoot = "";
     dce = false;
+    dva = false;
     exception_ = false;
     noalloc = false;
     projectRoot = "";
@@ -23,10 +25,13 @@ let runConfig =
 
 let all () =
   runConfig.dce <- true;
+  runConfig.dva <- true;
   runConfig.exception_ <- true;
   runConfig.termination <- true
 
 let dce () = runConfig.dce <- true
+
+let dva () = runConfig.dva <- true
 
 let exception_ () = runConfig.exception_ <- true
 

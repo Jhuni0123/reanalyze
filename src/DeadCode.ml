@@ -25,7 +25,6 @@ let processCmt ~cmtFilePath (cmt_infos : CL.Cmt_format.cmt_infos) =
          Ideally, the handling should be less location-based, just like other language aspects. *)
       false
     in
-    let _ = DVA.preprocessStructure structure in
     DeadValue.processStructure ~doTypes:true ~doExternals
       ~cmt_value_dependencies:cmt_infos.cmt_value_dependencies structure
   | _ -> ());

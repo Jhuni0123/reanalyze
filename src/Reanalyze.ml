@@ -32,6 +32,7 @@ let loadCmtFile cmtFilePath =
       !currentModule
       |> Name.create ~isInterface:(Filename.check_suffix !currentSrc "i");
     if runConfig.dce then cmt_infos |> DeadCode.processCmt ~cmtFilePath;
+    if runConfig.dva then cmt_infos |> DVA.processCmt;
     if runConfig.exception_ then cmt_infos |> Exception.processCmt;
     if runConfig.noalloc then cmt_infos |> Noalloc.processCmt;
     if runConfig.termination then cmt_infos |> Arnold.processCmt
@@ -90,9 +91,9 @@ let runAnalysis ~cmtRoot ~ppf =
   if runConfig.dce then (
     DeadException.forceDelayedItems ();
     DeadOptionalArgs.forceDelayedItems ();
-    DeadCommon.reportDead ~checkOptionalArg:DeadOptionalArgs.check ppf;
-    DVA.reportDead ppf;
+    (* DeadCommon.reportDead ~checkOptionalArg:DeadOptionalArgs.check ppf; *)
     DeadCommon.WriteDeadAnnotations.write ());
+  if runConfig.dva then DVA.reportDead ~ppf;
   if runConfig.exception_ then Exception.reportResults ~ppf;
   if runConfig.noalloc then Noalloc.reportResults ~ppf;
   if runConfig.termination then Arnold.reportResults ~ppf;
@@ -121,6 +122,10 @@ let cli () =
     RunConfig.dce ();
     cmtRootRef := cmtRoot;
     analysisKindSet := true
+  and setDVA cmtRoot =
+    RunConfig.dva ();
+    cmtRootRef := cmtRoot;
+    analysisKindSet := true
   and setException cmtRoot =
     RunConfig.exception_ ();
     cmtRootRef := cmtRoot;
@@ -142,6 +147,7 @@ let cli () =
       ("-ci", Unit (fun () -> Cli.ci := true), "Internal flag for use in CI");
       ("-config", Unit setConfig, "Read the analysis mode from bsconfig.json");
       ("-dce", Unit (fun () -> setDCE None), "Eperimental DCE");
+      ("-dva", Unit (fun () -> setDVA None), "Eperimental DVA");
       ("-debug", Unit (fun () -> Cli.debug := true), "Print debug information");
       ( "-dce-cmt",
         String (fun s -> setDCE (Some s)),
