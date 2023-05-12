@@ -10,76 +10,68 @@ module Id = struct
 
   let create ctx ident : t = (ctx, ident)
 
-  let createTopLevelModuleId modname : t =
+  let createCmtModuleId modname : t =
     ("+", {name = modname; stamp = 0; flags = 0})
 
-  let ident (id: t) = snd id
-  let ctx (id: t) = fst id
-
+  let ident (id : t) = snd id
+  let ctx (id : t) = fst id
   let name id = id |> ident |> CL.Ident.name
-
-  let hash id =
-    CL.Ident.hash (snd id)
+  let hash id = CL.Ident.hash (snd id)
 
   let compare a b =
     let c = String.compare (ctx a) (ctx b) in
-    if c <> 0 then c
-    else CL.Ident.compare (ident a) (ident b)
+    if c <> 0 then c else CL.Ident.compare (ident a) (ident b)
 
   let equal a b =
     String.equal (ctx a) (ctx b) && CL.Ident.equal (ident a) (ident b)
 
-  let print (id: t) =
-    Printf.printf "[%s]%s" (ctx id) (name id)
+  let print (id : t) = Printf.printf "[%s]%s" (ctx id) (name id)
 end
 
+module IdTbl = Hashtbl.Make (Id)
+
 module ModuleEnv = struct
-  module IdTbl = Hashtbl.Make (Id)
-  type t = (string, Id.t) Hashtbl.t IdTbl.t
+  let env : (string, Id.t) Hashtbl.t IdTbl.t = IdTbl.create 10
 
-  let create (): t =
-    IdTbl.create 10
-
-  let addMember (parent: Id.t) (child: Id.t) env =
+  let addMember (parent : Id.t) (child : Id.t) =
     match IdTbl.find_opt env parent with
     | Some tbl ->
-        (* if not (Hashtbl.mem tbl (CL.Ident.name child)) then *)
-          Hashtbl.add tbl (Id.name child) child
+      (* if not (Hashtbl.mem tbl (CL.Ident.name child)) then *)
+      Hashtbl.add tbl (Id.name child) child
     | None ->
-        let tbl = Hashtbl.create 10 in
-        Hashtbl.add tbl (Id.name child) child;
-        IdTbl.add env parent tbl
+      let tbl = Hashtbl.create 10 in
+      Hashtbl.add tbl (Id.name child) child;
+      IdTbl.add env parent tbl
 
-  let resolvePath currentMod (path: CL.Path.t) (env: t): Id.t list =
-    let rec _findIdents (p: CL.Path.t): Id.t list =
+  let resolvePath currentMod (path : CL.Path.t) : Id.t list =
+    let rec _findIdents (p : CL.Path.t) : Id.t list =
       match p with
-      | Pident id ->
-          (match CL.Ident.persistent id with
-          | true -> [Id.createTopLevelModuleId (CL.Ident.name id)]
-          | false -> [Id.create currentMod id]
-          )
-      | Pdot (sub, name, _) -> (
+      | Pident id -> (
+        match CL.Ident.persistent id with
+        | true -> [Id.createCmtModuleId (CL.Ident.name id)]
+        | false -> [Id.create currentMod id])
+      | Pdot (sub, name, _) ->
         let parents = _findIdents sub in
-        parents |> List.map (fun parent -> 
-            (match IdTbl.find_opt env parent with
-            | Some tbl -> Hashtbl.find_all tbl name
-            | None -> []
-            )
-        ) |> List.flatten
-      )
+        parents
+        |> List.map (fun parent ->
+               match IdTbl.find_opt env parent with
+               | Some tbl -> Hashtbl.find_all tbl name
+               | None -> [])
+        |> List.flatten
       | Papply _ -> []
-    in _findIdents path
+    in
+    _findIdents path
 
-  let print (env: t) =
-    env |> IdTbl.iter (fun id tbl ->
-      Id.print id;
-      print_endline ":";
-      tbl |> Hashtbl.iter (fun name id' ->
-        print_string ("  " ^ name ^ ": ");
-        Id.print id';
-        print_newline ();
-      )
-    )
+  let print () =
+    env
+    |> IdTbl.iter (fun id tbl ->
+           Id.print id;
+           print_endline ":";
+           tbl
+           |> Hashtbl.iter (fun name id' ->
+                  print_string ("  " ^ name ^ ": ");
+                  Id.print id';
+                  print_newline ()))
 end
 
 (* Expression ID mapping *)
@@ -96,7 +88,6 @@ module Expr = struct
   let fromIdTbl : (id, expression) Hashtbl.t = Hashtbl.create 256
   let origLocTbl : (id, CL.Location.t) Hashtbl.t = Hashtbl.create 256
   let fromId eid = Hashtbl.find fromIdTbl eid
-
   let origLoc e = Hashtbl.find origLocTbl (toId e)
 
   let preprocess e =
@@ -108,23 +99,10 @@ module Expr = struct
 end
 
 (* Function ID mapping *)
-type fnbody = {pat : pattern; exp_id : Expr.id}
+type fnbody = {cmtModName : string; pat : pattern; exp_id : Expr.id}
 
 let idToBody : (Expr.id, fnbody list) Hashtbl.t = Hashtbl.create 256
 let bodyOfFunction eid = Hashtbl.find idToBody eid
-
-let preprocessFunction e =
-  let eid = Expr.toId e in
-  match e.exp_desc with
-  | Texp_function {param; cases} ->
-    let ids =
-      cases
-      |> List.map (fun case ->
-             {pat = case.c_lhs; exp_id = Expr.toId case.c_rhs})
-    in
-    if Hashtbl.mem idToBody eid then raise (RuntimeError "duplicate ident");
-    Hashtbl.add idToBody eid ids
-  | _ -> ()
 
 let string_of_loc (loc : CL.Location.t) =
   let file, line, startchar = CL.Location.get_pos_info loc.loc_start in
@@ -134,67 +112,76 @@ let string_of_loc (loc : CL.Location.t) =
   Printf.sprintf "%s:%i:%i:%i:%B" filename line (startchar - 1) (endchar - 1)
     loc.loc_ghost
 
-let rec isUnitType (t: type_expr) =
+let rec isUnitType (t : type_expr) =
   match t.desc with
-  | Tconstr (path, _, _) ->
-      CL.Path.name path = "unit"
+  | Tconstr (path, [], _) -> CL.Path.name path = "unit"
   | Tlink t -> isUnitType t
   | _ -> false
 
-module ValueMeta = struct
+let rec isEmptyPropsType (t : type_expr) =
+  match t.desc with
+  | Tconstr (path, [], _) -> CL.Path.name path = "props"
+  | Tlink t -> isEmptyPropsType t
+  | _ -> false
+
+module ValueKind = struct
   type t =
-    | VM_Expr of Expr.id
-    | VM_Mutable of Expr.id * string
-    | VM_Name of Id.t
+    | VK_Expr of Expr.id
+    | VK_Mutable of Expr.id * string
+    | VK_Name of Id.t
 
-  let expr e = VM_Expr (Expr.toId e)
-  let compare = compare
+  let expr e = VK_Expr (Expr.toId e)
+  let mutableField e f = VK_Mutable (Expr.toId e, f)
+  let compare a b =
+    match a, b with
+    | VK_Name id1, VK_Name id2 -> Id.compare id1 id2
+    | _ -> compare a b
 
-  let print vm =
-    match vm with
-    | VM_Expr eid -> Printf.printf "Expr(%s,%s)" eid (eid |> Expr.fromId |> Expr.origLoc |> string_of_loc)
-    | VM_Mutable (et, s) -> Printf.printf "Mut(%s)" s
-    | VM_Name id ->
-        print_string "Name("; Id.print id; 
+  let print vk =
+    match vk with
+    | VK_Expr eid ->
+      Printf.printf "Expr(%s,%s)" eid
+        (eid |> Expr.fromId |> Expr.origLoc |> string_of_loc)
+    | VK_Mutable (et, s) -> Printf.printf "Mut(%s)" s
+    | VK_Name id ->
+      print_string "Name(";
+      Id.print id;
       Printf.printf ")"
 
-  let shouldReport vm =
-    match vm with
-    | VM_Expr eid -> (
-        let e = Expr.fromId eid in
-        not (isUnitType e.exp_type)
-    )
+  let shouldReport vk =
+    match vk with
+    | VK_Expr eid ->
+      let e = Expr.fromId eid in
+      (not (isUnitType e.exp_type)) && not (isEmptyPropsType e.exp_type)
     | _ -> true
 
-  let report ppf vm =
+  let report ppf vk =
     let loc =
-      match vm with
-      | VM_Expr eid -> Expr.origLoc (Expr.fromId eid)
-      | VM_Mutable (eid, _) -> (Expr.fromId eid).exp_loc
-      | VM_Name (name) -> CL.Location.none
+      match vk with
+      | VK_Expr eid -> Expr.origLoc (Expr.fromId eid)
+      | VK_Mutable (eid, _) -> (Expr.fromId eid).exp_loc
+      | VK_Name name -> CL.Location.none
     in
     let name =
-      match vm with
-      | VM_Expr eid ->
-          ""
-      | VM_Mutable _ -> "<memory>"
-      | VM_Name id -> Id.name id
+      match vk with
+      | VK_Expr eid -> ""
+      | VK_Mutable _ -> "<memory>"
+      | VK_Name id -> Printf.sprintf "[%s]%s" (Id.ctx id) (Id.name id)
     in
-    if shouldReport vm then (
+    if shouldReport vk then
       Log_.warning ~loc ~name:"Warning Dead Value" (fun ppf () ->
-        match vm with
-        | VM_Expr eid ->
+          match vk with
+          | VK_Expr eid ->
             let e = Expr.fromId eid in
             Format.fprintf ppf "\n";
-            Print.print_expression 0 e
-        | VM_Mutable _ ->  Format.fprintf ppf "<mutable field>"
-        | VM_Name id ->
-            Format.fprintf ppf "%s" (Id.name id)
-      );
-    )
+            Print.print_expression 0 e;
+            print_newline ();
+            Print.print_type e.exp_type
+          | VK_Mutable _ -> Format.fprintf ppf "<mutable field>"
+          | VK_Name id -> Format.fprintf ppf "%s" name)
 end
 
-module VMSet = Set.Make (ValueMeta)
+module VKSet = Set.Make (ValueKind)
 
 module Field = struct
   type t = F_Record of string | F_Tuple of int
@@ -217,7 +204,7 @@ module Value = struct
     | V_FnSideEffect
 
   let compare a b =
-    match a, b with
+    match (a, b) with
     | V_Name id1, V_Name id2 -> Id.compare id1 id2
     | _ -> compare a b
 
@@ -240,7 +227,7 @@ module Value = struct
         eid
     | V_Fn (eid, param) -> Printf.printf "Fn(%s)" param.name
     | V_PartialApp (eid, args) ->
-        Printf.printf "App(%s,[" eid;
+      Printf.printf "App(%s,[" eid;
       None :: args
       |> Print.print_list
            (fun argo ->
@@ -257,10 +244,9 @@ module Reduction = struct
 
   let compare = compare
 end
-open ValueMeta
+
+open ValueKind
 open Value
-
-
 open Reduction
 module ReductionSet = Set.Make (Reduction)
 
@@ -305,8 +291,8 @@ module Live = struct
 
   let variant lbl l : t = Variant (StringMap.singleton lbl l)
   let field f l : t = Record (FieldMap.singleton f l)
-  let construct cstr ls : t =
-    Construct (CstrMap.singleton cstr ls)
+  let construct cstr ls : t = Construct (CstrMap.singleton cstr ls)
+
   let constructi cstr idx l : t =
     let ls = List.init (idx + 1) (function i when i = idx -> l | _ -> Bot) in
     Construct (CstrMap.singleton cstr ls)
@@ -328,13 +314,13 @@ module Live = struct
     | Record fs, Record fs' ->
       Record (FieldMap.union (fun k l1 l2 -> Some (join l1 l2)) fs fs')
     | Construct cs, Construct cs' ->
-        let rec join_list l1 l2 =
-          match l1, l2 with
-          | [], [] -> []
-          | [], _ -> l2
-          | _, [] -> l1
-          | hd1 :: tl1, hd2 :: tl2 -> (join hd1 hd2) :: (join_list tl1 tl2)
-        in
+      let rec join_list l1 l2 =
+        match (l1, l2) with
+        | [], [] -> []
+        | [], _ -> l2
+        | _, [] -> l1
+        | hd1 :: tl1, hd2 :: tl2 -> join hd1 hd2 :: join_list tl1 tl2
+      in
       Construct (CstrMap.union (fun k l1 l2 -> Some (join_list l1 l2)) cs cs')
     | _ -> Top
 
@@ -362,11 +348,11 @@ module Live = struct
              | _ -> None)
            fs fs')
     | Construct cs, Construct cs' ->
-        let rec meet_list l1 l2 =
-          match l1, l2 with
-          | hd1 :: tl1, hd2 :: tl2 -> (meet hd1 hd2) :: (meet_list tl1 tl2)
-          | _ -> []
-        in
+      let rec meet_list l1 l2 =
+        match (l1, l2) with
+        | hd1 :: tl1, hd2 :: tl2 -> meet hd1 hd2 :: meet_list tl1 tl2
+        | _ -> []
+      in
       Construct
         (CstrMap.merge
            (fun k op1 op2 ->
@@ -423,7 +409,8 @@ module Live = struct
       ks |> StringMap.bindings
       |> Print.print_list
            (fun (k, vo) ->
-             ps "Variant:";ps k;
+             ps "Variant:";
+             ps k;
              ps "(";
              (match vo with Some v -> print v | None -> ());
              ps ")")
@@ -432,7 +419,8 @@ module Live = struct
       fs |> FieldMap.bindings
       |> Print.print_list
            (fun (k, v) ->
-             ps "Field:";(match k with
+             ps "Field:";
+             (match k with
              | Field.F_Tuple n -> print_int n
              | F_Record f -> print_string f);
              ps "(";
@@ -443,7 +431,8 @@ module Live = struct
       cs |> CstrMap.bindings
       |> Print.print_list
            (fun (cstr_desc, v) ->
-             ps "Cstr:";ps cstr_desc.cstr_name;
+             ps "Cstr:";
+             ps cstr_desc.cstr_name;
              ps "(";
              v |> Print.print_list print ",";
              ps ")")
@@ -460,7 +449,7 @@ module Live = struct
       |> List.mapi (fun i pat -> field (F_Tuple i) (controlledByPat pat))
       |> List.fold_left (fun acc l -> join acc l) Bot
     | Tpat_construct (lid, cstr_desc, pats) ->
-        pats |> List.map controlledByPat |> construct cstr_desc
+      pats |> List.map controlledByPat |> construct cstr_desc
     | Tpat_variant (label, pato, row) ->
       variant label (pato |> Option.map controlledByPat)
     | Tpat_record (fields, closed_flag) ->
@@ -509,10 +498,164 @@ module ValueSet = struct
   let mem k vs = match vs with VS_Top -> true | VS_Set s -> s |> ElemSet.mem k
 end
 
-module ValueMap = Map.Make (ValueMeta)
+module ValueMap = Map.Make (ValueKind)
+
+module ValueClosure = struct
+  module StringSet = Set.Make (String)
+  module IdSet = Set.Make (Id)
+
+  module Prim = struct
+    type t = CL.Primitive.description
+
+    let compare = compare
+  end
+
+  module PrimSet = Set.Make (Prim)
+
+  module Construct = struct
+    type t = constructor_description * Expr.id list
+
+    let compare = compare
+  end
+
+  module CstrSet = Set.Make (Construct)
+
+  module Variant = struct
+    type t = string * Expr.id
+
+    let compare = compare
+  end
+
+  module VariantSet = Set.Make (Variant)
+
+  module WithField = struct
+    type t = Field.t * Expr.id
+
+    let compare = compare
+  end
+
+  module FieldSet = Set.Make (WithField)
+
+  module Fn = struct
+    type t = Expr.id * CL.Ident.t
+
+    let compare = compare
+  end
+
+  module FnSet = Set.Make (Fn)
+
+  module PartialApp = struct
+    type t = Expr.id * Expr.id option list
+
+    let compare = compare
+  end
+
+  module PartialAppSet = Set.Make (PartialApp)
+  module ReductionSet = Set.Make (Reduction)
+
+  type t = {
+    mutable unknown : bool;
+    mutable passedToUnknown : bool;
+    mutable sideEffect : bool;
+    mutable funcWithSideEffect : bool;
+    mutable exprs : StringSet.t;
+    mutable ids : IdSet.t;
+    mutable prims : PrimSet.t;
+    mutable constructions : CstrSet.t;
+    mutable variants : VariantSet.t;
+    mutable fields : FieldSet.t;
+    mutable functions : FnSet.t;
+    mutable partialApps : PartialAppSet.t;
+    mutable reductions : ReductionSet.t;
+  }
+
+  let init () : t =
+    {
+      unknown = false;
+      passedToUnknown = false;
+      sideEffect = false;
+      funcWithSideEffect = false;
+      exprs = StringSet.empty;
+      ids = IdSet.empty;
+      prims = PrimSet.empty;
+      constructions = CstrSet.empty;
+      variants = VariantSet.empty;
+      fields = FieldSet.empty;
+      functions = FnSet.empty;
+      partialApps = PartialAppSet.empty;
+      reductions = ReductionSet.empty;
+    }
+
+  type element =
+    | C_Expr of Expr.id
+    | C_Id of Id.t
+    | C_Prim of Prim.t
+    | C_Cstr of Construct.t
+    | C_Variant of Variant.t
+    | C_Field of WithField.t
+    | C_Func of Fn.t
+    | C_PartialApp of PartialApp.t
+    | C_Reduction of Reduction.t
+
+  let add (e : element) (c : t) =
+    match e with
+    | C_Expr eid -> c.exprs <- c.exprs |> StringSet.add eid
+    | C_Id id -> c.ids <- c.ids |> IdSet.add id
+    | C_Prim prim -> c.prims <- c.prims |> PrimSet.add prim
+    | C_Cstr cstr -> c.constructions <- c.constructions |> CstrSet.add cstr
+    | C_Variant v -> c.variants <- c.variants |> VariantSet.add v
+    | C_Field f -> c.fields <- c.fields |> FieldSet.add f
+    | C_Func fn -> c.functions <- c.functions |> FnSet.add fn
+    | C_PartialApp pa -> c.partialApps <- c.partialApps |> PartialAppSet.add pa
+    | C_Reduction r -> c.reductions <- c.reductions |> ReductionSet.add r
+end
+
+module NewValue = struct
+  type t = {
+    kind : ValueKind.t;
+    loc : CL.Location.t;
+    value_type : type_expr;
+    closure : ValueClosure.t;
+    liveness : Live.t;
+  }
+
+  let tbl : (ValueKind.t, t) Hashtbl.t = Hashtbl.create 10
+  let get : ValueKind.t -> t = function vm -> Hashtbl.find tbl vm
+  let addValue (v : t) = Hashtbl.add tbl v.kind v
+
+  let addExpr eid (e : expression) =
+    addValue
+      {
+        kind = VK_Expr eid;
+        loc = e.exp_loc;
+        value_type = e.exp_type;
+        closure = ValueClosure.init ();
+        liveness = Live.Bot;
+      }
+
+  let addId (id : Id.t) loc te =
+    addValue
+      {
+        kind = VK_Name id;
+        loc;
+        value_type = te;
+        closure = ValueClosure.init ();
+        liveness = Live.Bot;
+      }
+
+  let addMutableField eid e label_desc =
+    addValue
+      {
+        kind = VK_Mutable (eid, label_desc.lbl_name);
+        loc = e.exp_loc;
+        value_type = label_desc.lbl_arg;
+        closure = ValueClosure.init ();
+        liveness = Live.Bot;
+      }
+end
 
 module Closure = struct
-  type t = (ValueMeta.t, ValueSet.t) Hashtbl.t
+  type t = (ValueKind.t, ValueSet.t) Hashtbl.t
 
   let addValue k v c : bool =
     match Hashtbl.find_opt c k with
@@ -542,14 +685,14 @@ module Closure = struct
   let print c =
     c |> Hashtbl.to_seq
     |> Seq.iter (fun (vm, vs) ->
-           ValueMeta.print vm;
+           ValueKind.print vm;
            print_string ": ";
            ValueSet.print vs;
            print_newline ())
 end
 
 module Liveness = struct
-  type t = (ValueMeta.t, Live.t) Hashtbl.t
+  type t = (ValueKind.t, Live.t) Hashtbl.t
 
   let init vms liveness =
     vms |> Seq.iter (fun vm -> Hashtbl.add liveness vm Live.Bot)
@@ -591,10 +734,10 @@ module Stack = struct
 end
 
 module Graph = struct
-  type node = ValueMeta.t
+  type node = ValueKind.t
   type func = Live.t -> Live.t
   type adj_list = (node, node * func) Hashtbl.t
-  type t = {mutable nodes : VMSet.t; adj : adj_list; adj_rev : adj_list}
+  type t = {mutable nodes : VKSet.t; adj : adj_list; adj_rev : adj_list}
 
   let reset g =
     Hashtbl.reset g.adj;
@@ -612,9 +755,9 @@ module Graph = struct
     let getnum vm =
       match Hashtbl.find_opt num vm with Some res -> res | None -> 0
     in
-    let finished = ref VMSet.empty in
-    let markfinished vm = finished := !finished |> VMSet.add vm in
-    let isfinished vm = !finished |> VMSet.mem vm in
+    let finished = ref VKSet.empty in
+    let markfinished vm = finished := !finished |> VKSet.add vm in
+    let isfinished vm = !finished |> VKSet.mem vm in
     let scc = Stack.create () in
     let rec dfs v =
       counter := !counter + 1;
@@ -636,13 +779,13 @@ module Graph = struct
           let t = stack |> Stack.pop in
           nodes |> Stack.push t;
           markfinished t;
-          if ValueMeta.compare t v = 0 then break := true
+          if ValueKind.compare t v = 0 then break := true
         done;
         scc |> Stack.push (nodes |> Stack.to_list));
       result
     in
     g.nodes
-    |> VMSet.iter (fun node -> if getnum node = 0 then dfs node |> ignore);
+    |> VKSet.iter (fun node -> if getnum node = 0 then dfs node |> ignore);
     scc |> Stack.to_list
 end
 
@@ -652,15 +795,22 @@ module Current = struct
   let sideEffectSet : ExprIdSet.t ref = ref ExprIdSet.empty
   let liveness : Liveness.t = Hashtbl.create 256
   let applications : Reductions.t = Hashtbl.create 256
-
-  let env: ModuleEnv.t = ModuleEnv.create ()
+  let passedToUnknown : VKSet.t ref = ref VKSet.empty
 
   let graph : Graph.t =
     {
-      nodes = VMSet.empty;
+      nodes = VKSet.empty;
       adj = Hashtbl.create 256;
       adj_rev = Hashtbl.create 256;
     }
+
+  let markPassedToUnknown vm : bool =
+    if !passedToUnknown |> VKSet.mem vm then false
+    else (
+      passedToUnknown := !passedToUnknown |> VKSet.add vm;
+      true)
+
+  let isPassedToUnknown vm : bool = !passedToUnknown |> VKSet.mem vm
 
   let markSideEffect e : bool =
     if !sideEffectSet |> ExprIdSet.mem (Expr.toId e) then false
@@ -673,28 +823,28 @@ module Current = struct
 
   let isSideEffectFn : expression -> bool =
    fun e ->
-    closure |> Closure.find (ValueMeta.expr e) |> ValueSet.mem V_FnSideEffect
+    closure |> Closure.find (ValueKind.expr e) |> ValueSet.mem V_FnSideEffect
 
   let markValuesAffectSideEffect e =
     match e.exp_desc with
     | Texp_setfield (exp1, lid, ld, exp2) ->
-      liveness |> Liveness.join (ValueMeta.expr exp1) Live.Top;
-      liveness |> Liveness.join (ValueMeta.expr exp2) Live.Top
+      liveness |> Liveness.join (ValueKind.expr exp1) Live.Top;
+      liveness |> Liveness.join (ValueKind.expr exp2) Live.Top
     | Texp_apply (exp, (_, Some _) :: _) ->
       if exp |> isSideEffectFn then
-        liveness |> Liveness.join (ValueMeta.expr exp) Live.Top
+        liveness |> Liveness.join (ValueKind.expr exp) Live.Top
     | Texp_ifthenelse (exp1, exp2, Some exp3) ->
       if exp2 |> hasSideEffect || exp3 |> hasSideEffect then
-        liveness |> Liveness.join (ValueMeta.expr exp1) Live.Top
+        liveness |> Liveness.join (ValueKind.expr exp1) Live.Top
     | Texp_ifthenelse (exp1, exp2, None) ->
       if hasSideEffect exp2 then
-        liveness |> Liveness.join (ValueMeta.expr exp1) Live.Top
+        liveness |> Liveness.join (ValueKind.expr exp1) Live.Top
     | Texp_while (exp1, exp2) ->
       if exp2 |> hasSideEffect then
-        liveness |> Liveness.join (ValueMeta.expr exp1) Live.Top
+        liveness |> Liveness.join (ValueKind.expr exp1) Live.Top
     | Texp_for (id, pat, exp1, exp2, direction_flag, exp3) ->
       if exp3 |> hasSideEffect then
-        liveness |> Liveness.join (VM_Name (Id.create !cmtModName id)) Live.Top
+        liveness |> Liveness.join (VK_Name (Id.create !cmtModName id)) Live.Top
     | Texp_match (exp, cases, exn_cases, partial) ->
       let casesHasSideEffect =
         cases
@@ -709,7 +859,7 @@ module Current = struct
                (fun acc case -> Live.join acc (Live.controlledByPat case.c_lhs))
                Live.Bot
         in
-        liveness |> Liveness.join (ValueMeta.expr exp) cond
+        liveness |> Liveness.join (ValueKind.expr exp) cond
     | _ -> ()
 
   let reset () =
@@ -720,19 +870,20 @@ module Current = struct
     Hashtbl.reset liveness
 end
 
-let traverseValueMetaMapper f =
+let traverseValueKindMapper f =
   let super = CL.Tast_mapper.default in
   let expr self e =
-    f (ValueMeta.expr e);
+    f (ValueKind.expr e);
     (match e.exp_desc with
-    | Texp_for (id, ppat, _, _, _, _) -> f (VM_Name (Id.create !Current.cmtModName id))
+    | Texp_for (id, ppat, _, _, _, _) ->
+      f (VK_Name (Id.create !Current.cmtModName id))
     | _ -> ());
     super.expr self e
   in
   let pat self p =
     (match p.pat_desc with
-    | Tpat_var (id, l) -> f (VM_Name (Id.create !Current.cmtModName id))
-    | Tpat_alias (_, id, l) -> f (VM_Name (Id.create !Current.cmtModName id))
+    | Tpat_var (id, l) -> f (VK_Name (Id.create !Current.cmtModName id))
+    | Tpat_alias (_, id, l) -> f (VK_Name (Id.create !Current.cmtModName id))
     | _ -> ());
     super.pat self p
   in
@@ -761,11 +912,17 @@ module ClosureAnalysis = struct
     let u = Current.applications |> Reductions.add eid reduce in
     updated := !updated || u
 
+  let markPassedToUnknown vm =
+    Current.liveness |> Liveness.join vm Live.Top;
+    let u = Current.markPassedToUnknown vm in
+    updated := !updated || u
+
   let rec initBind pat e =
     match pat.pat_desc with
-    | Tpat_var (id, l) -> addValue (VM_Name (Id.create !Current.cmtModName id)) (Value.expr e)
+    | Tpat_var (id, l) ->
+      addValue (VK_Name (Id.create !Current.cmtModName id)) (Value.expr e)
     | Tpat_alias (pat', id, l) ->
-      addValue (VM_Name (Id.create !Current.cmtModName id)) (Value.expr e);
+      addValue (VK_Name (Id.create !Current.cmtModName id)) (Value.expr e);
       initBind pat' e
     | _ -> ()
 
@@ -776,25 +933,23 @@ module ClosureAnalysis = struct
     | Texp_ident (path, lid, vd) -> (
       match vd.val_kind with
       | Val_reg -> (
-          match Current.env |> ModuleEnv.resolvePath !Current.cmtModName path with
-          | [] -> addValueSet (ValueMeta.expr e) VS_Top
-          | ids ->
-              ids |> List.iter (fun id ->
-                let vm = VM_Name (id) in
-                if Current.graph.nodes |> VMSet.mem vm then
-                  addValue (ValueMeta.expr e) (V_Name id)
-                else
-                  addValueSet (ValueMeta.expr e) VS_Top
-              )
-      )
+        match ModuleEnv.resolvePath !Current.cmtModName path with
+        | [] -> addValueSet (ValueKind.expr e) VS_Top
+        | ids ->
+          ids
+          |> List.iter (fun id ->
+                 let vm = VK_Name id in
+                 if Current.graph.nodes |> VKSet.mem vm then
+                   addValue (ValueKind.expr e) (V_Name id)
+                 else addValueSet (ValueKind.expr e) VS_Top))
       | Val_prim prim ->
-          (* print_endline prim.prim_name; *)
-          (* print_endline (string_of_int prim.prim_arity); *)
-          addValue (ValueMeta.expr e) (V_Prim prim))
+        (* print_endline prim.prim_name; *)
+        (* print_endline (string_of_int prim.prim_arity); *)
+        addValue (ValueKind.expr e) (V_Prim prim))
     | Texp_constant _ -> ()
-    | Texp_let (_, _, exp) -> addValue (ValueMeta.expr e) (Value.expr exp)
+    | Texp_let (_, _, exp) -> addValue (ValueKind.expr e) (Value.expr exp)
     | Texp_function {arg_label; param; cases; partial} ->
-      addValue (ValueMeta.expr e) (V_Fn (Expr.toId e, param))
+      addValue (ValueKind.expr e) (V_Fn (Expr.toId e, param))
     | Texp_apply (exp, args) -> (
       let args = args |> List.map snd in
       match args with
@@ -803,28 +958,28 @@ module ClosureAnalysis = struct
           (Reduce
              (Expr.toId exp, Expr.toId hd, tl |> List.map (Option.map Expr.toId)))
       | None :: tl ->
-        addValue (ValueMeta.expr e)
+        addValue (ValueKind.expr e)
           (V_PartialApp (Expr.toId exp, tl |> List.map (Option.map Expr.toId)))
       | [] -> raise (RuntimeError "Unreachable: Empty apply"))
     | Texp_match (exp, cases, exn_cases, partial) ->
       cases @ exn_cases
       |> List.iter (fun case ->
-             addValue (ValueMeta.expr e) (Value.expr case.c_rhs);
+             addValue (ValueKind.expr e) (Value.expr case.c_rhs);
              initBind case.c_lhs exp)
     | Texp_try (exp, cases) ->
-      addValue (ValueMeta.expr e) (Value.expr exp);
+      addValue (ValueKind.expr e) (Value.expr exp);
       cases
       |> List.iter (fun case ->
-             addValue (ValueMeta.expr e) (Value.expr case.c_rhs))
+             addValue (ValueKind.expr e) (Value.expr case.c_rhs))
     | Texp_tuple exps ->
       exps
       |> List.iteri (fun i exp ->
-             addValue (ValueMeta.expr e) (V_Field (F_Tuple i, Expr.toId exp)))
+             addValue (ValueKind.expr e) (V_Field (F_Tuple i, Expr.toId exp)))
     | Texp_construct (lid, cstr_desc, exps) ->
-      addValue (ValueMeta.expr e)
+      addValue (ValueKind.expr e)
         (V_Cstr (cstr_desc, exps |> List.map Expr.toId))
     | Texp_variant (label, Some exp) ->
-      addValue (ValueMeta.expr e) (V_Variant (label, Expr.toId exp))
+      addValue (ValueKind.expr e) (V_Variant (label, Expr.toId exp))
     | Texp_record {fields; representation; extended_expression} ->
       fields
       |> Array.iter (fun (label_desc, label_def) ->
@@ -833,22 +988,24 @@ module ClosureAnalysis = struct
                match label_def with
                | Kept t -> ()
                | Overridden (lid, fe) ->
-                 addValue (ValueMeta.expr e)
+                 addValue (ValueKind.expr e)
                    (V_Field (F_Record label_desc.lbl_name, Expr.toId fe)))
              | Mutable -> (
                match label_def with
                | Kept t -> ()
-               | Overridden (lid, fe) -> (
-                 addValue (ValueMeta.expr e) (V_Mutable (Expr.toId e, label_desc.lbl_name));
-                 addValue (VM_Mutable (Expr.toId e, label_desc.lbl_name)) (Value.expr fe)
-               ) ))
+               | Overridden (lid, fe) ->
+                 addValue (ValueKind.expr e)
+                   (V_Mutable (Expr.toId e, label_desc.lbl_name));
+                 addValue
+                   (VK_Mutable (Expr.toId e, label_desc.lbl_name))
+                   (Value.expr fe)))
     | Texp_field _ -> ()
     | Texp_setfield (exp1, lid, ld, exp2) -> markSideEffect e
     | Texp_array _ -> ()
     | Texp_ifthenelse (e1, e2, Some e3) ->
-      addValue (ValueMeta.expr e) (Value.expr e2);
-      addValue (ValueMeta.expr e) (Value.expr e3)
-    | Texp_sequence (e1, e2) -> addValue (ValueMeta.expr e) (Value.expr e2)
+      addValue (ValueKind.expr e) (Value.expr e2);
+      addValue (ValueKind.expr e) (Value.expr e3)
+    | Texp_sequence (e1, e2) -> addValue (ValueKind.expr e) (Value.expr e2)
     | Texp_while _ -> ()
     | Texp_for _ -> ()
     | _ -> markSideEffect e
@@ -865,18 +1022,53 @@ module ClosureAnalysis = struct
     in
     {super with expr; value_binding}
 
+  let rec bindUnknown cmtModName pat =
+    let bindUnknown = bindUnknown cmtModName in
+    match pat.pat_desc with
+    | Tpat_any -> ()
+    | Tpat_var (id, l) -> addValueSet (VK_Name (Id.create cmtModName id)) VS_Top
+    | Tpat_alias (pat', id, l) ->
+      addValueSet (VK_Name (Id.create cmtModName id)) VS_Top;
+      bindUnknown pat'
+    | Tpat_constant _ -> ()
+    | Tpat_tuple pats -> pats |> List.iter bindUnknown
+    | Tpat_construct (lid, cstr_desc, pats) -> pats |> List.iter bindUnknown
+    | Tpat_variant (_, None, _) -> ()
+    | Tpat_variant (lbl, Some pat, _) -> bindUnknown pat
+    | Tpat_record (fields, _) ->
+      fields |> List.iter (fun (_, _, pat') -> bindUnknown pat')
+    | Tpat_or (pat1, pat2, _) ->
+      bindUnknown pat1;
+      bindUnknown pat2
+    | Tpat_array pats -> pats |> List.iter bindUnknown
+    | Tpat_lazy pat' -> bindUnknown pat'
+
   let update_transitivity vm =
+    let passedToUnknown = Current.isPassedToUnknown vm in
     match find vm with
     | VS_Set s ->
       ValueSet.ElemSet.iter
         (fun v ->
           match v with
           | V_Expr eid ->
-            let set' = find (VM_Expr eid) in
-            addValueSet vm set'
+            let set' = find (VK_Expr eid) in
+            addValueSet vm set';
+            if passedToUnknown then markPassedToUnknown (VK_Expr eid)
           | V_Name id ->
-            let set' = find (VM_Name id) in
-            addValueSet vm set'
+            let set' = find (VK_Name id) in
+            addValueSet vm set';
+            if passedToUnknown then markPassedToUnknown (VK_Name id)
+          | V_Cstr (_, eids) ->
+            if passedToUnknown then
+              eids |> List.iter (fun eid -> markPassedToUnknown (VK_Expr eid))
+          | V_Field (_, eid) ->
+            if passedToUnknown then markPassedToUnknown (VK_Expr eid)
+          | V_Mutable (eid, f) ->
+            if passedToUnknown then markPassedToUnknown (VK_Mutable (eid, f))
+          | V_Fn (eid, param) ->
+            let bodies = bodyOfFunction eid in
+            bodies
+            |> List.iter (fun body -> bindUnknown body.cmtModName body.pat)
           | _ -> ())
         s
     | VS_Top -> ()
@@ -886,20 +1078,22 @@ module ClosureAnalysis = struct
     | "%addint" -> ()
     | _ ->
       let (Reduce (eid, arg1, args)) = app in
-      addValueSet (ValueMeta.expr e) VS_Top;
-      Current.liveness |> Liveness.join (VM_Expr eid) Live.Top;
+      addValueSet (ValueKind.expr e) VS_Top;
+      Current.liveness |> Liveness.join (VK_Expr eid) Live.Top;
       Some arg1 :: args
       |> List.iter (function
            | None -> ()
            | Some eid ->
-             Current.liveness |> Liveness.join (VM_Expr eid) Live.Top);
+             Current.liveness |> Liveness.join (VK_Expr eid) Live.Top);
+      markPassedToUnknown (VK_Expr eid);
       markSideEffect e
 
   let rec patIsTop pat =
     match pat.pat_desc with
-    | Tpat_var (id, l) -> addValueSet (VM_Name (Id.create !Current.cmtModName id)) VS_Top
+    | Tpat_var (id, l) ->
+      addValueSet (VK_Name (Id.create !Current.cmtModName id)) VS_Top
     | Tpat_alias (pat', id, l) ->
-      addValueSet (VM_Name (Id.create !Current.cmtModName id)) VS_Top;
+      addValueSet (VK_Name (Id.create !Current.cmtModName id)) VS_Top;
       patIsTop pat'
     | Tpat_or (pat1, pat2, _) ->
       patIsTop pat1;
@@ -913,16 +1107,18 @@ module ClosureAnalysis = struct
       fields |> List.iter (fun (_, _, pat') -> patIsTop pat')
     | _ -> ()
 
-  let rec stepBind pat expr =
+  let rec stepBind cmtModName pat expr =
+    let stepBind = stepBind cmtModName in
     match pat.pat_desc with
     | Tpat_any -> ()
-    | Tpat_var (id, l) -> addValue (VM_Name (Id.create !Current.cmtModName id)) (Value.expr expr)
+    | Tpat_var (id, l) ->
+      addValue (VK_Name (Id.create cmtModName id)) (Value.expr expr)
     | Tpat_alias (pat', id, l) ->
-      addValue (VM_Name (Id.create !Current.cmtModName id)) (Value.expr expr);
+      addValue (VK_Name (Id.create cmtModName id)) (Value.expr expr);
       stepBind pat' expr
     | Tpat_constant _ -> ()
     | Tpat_tuple pats -> (
-      match find (ValueMeta.expr expr) with
+      match find (ValueKind.expr expr) with
       | VS_Top -> pats |> List.iter patIsTop
       | VS_Set vs ->
         vs
@@ -931,7 +1127,7 @@ module ClosureAnalysis = struct
                stepBind (List.nth pats i) (Expr.fromId eid)
              | _ -> ()))
     | Tpat_construct (lid, cstr_desc, pats) -> (
-      match find (ValueMeta.expr expr) with
+      match find (ValueKind.expr expr) with
       | VS_Top -> pats |> List.iter patIsTop
       | VS_Set vs ->
         vs
@@ -943,7 +1139,7 @@ module ClosureAnalysis = struct
                | _ -> ()))
     | Tpat_variant (_, None, _) -> ()
     | Tpat_variant (lbl, Some pat, _) -> (
-      match find (ValueMeta.expr expr) with
+      match find (ValueKind.expr expr) with
       | VS_Top -> patIsTop pat
       | VS_Set vs ->
         vs
@@ -952,7 +1148,7 @@ module ClosureAnalysis = struct
                stepBind pat (Expr.fromId eid)
              | _ -> ()))
     | Tpat_record (fields, closed_flag) -> (
-      match find (ValueMeta.expr expr) with
+      match find (ValueKind.expr expr) with
       | VS_Top -> fields |> List.iter (fun (_, _, pat) -> patIsTop pat)
       | VS_Set vs ->
         vs
@@ -981,20 +1177,23 @@ module ClosureAnalysis = struct
       if valueBindingsHaveSideEffect || exp |> Current.hasSideEffect then
         markSideEffect e
     | Texp_apply _ ->
-      Current.applications |> Reductions.find (Expr.toId e) |> ReductionSet.elements
+      Current.applications
+      |> Reductions.find (Expr.toId e)
+      |> ReductionSet.elements
       |> List.iter (fun app ->
              match app with
              | Reduce (eid, arg, tl) -> (
                if Current.isSideEffectFn (Expr.fromId eid) then markSideEffect e;
-               match find (VM_Expr eid) with
+               match find (VK_Expr eid) with
                | VS_Top ->
-                   markSideEffect e;
-                   addValueSet (ValueMeta.expr e) VS_Top;
-                   Current.liveness |> Liveness.join (VM_Expr arg) Live.Top;
-                   tl |> List.iter (function None -> () | Some arg -> 
-                     Current.liveness |> Liveness.join (VM_Expr arg) Live.Top
-                   );
-
+                 markSideEffect e;
+                 addValueSet (ValueKind.expr e) VS_Top;
+                 Some arg :: tl
+                 |> List.iter (function
+                      | None -> ()
+                      | Some arg ->
+                        Current.liveness |> Liveness.join (VK_Expr arg) Live.Top;
+                        markPassedToUnknown (VK_Expr arg))
                | VS_Set s ->
                  s
                  |> ValueSet.ElemSet.iter (fun v ->
@@ -1009,12 +1208,13 @@ module ClosureAnalysis = struct
                           let bodies = bodyOfFunction eid in
                           bodies
                           |> List.iter (fun body ->
-                                 stepBind body.pat (Expr.fromId arg));
+                                 stepBind body.cmtModName body.pat
+                                   (Expr.fromId arg));
                           match tl with
                           | [] ->
                             bodies
                             |> List.iter (fun body ->
-                                   addValue (ValueMeta.expr e)
+                                   addValue (ValueKind.expr e)
                                      (V_Expr body.exp_id))
                           | Some arg' :: tl' ->
                             bodies
@@ -1024,32 +1224,36 @@ module ClosureAnalysis = struct
                           | None :: tl' ->
                             bodies
                             |> List.iter (fun body ->
-                                   addValue (ValueMeta.expr e)
+                                   addValue (ValueKind.expr e)
                                      (V_PartialApp (body.exp_id, tl'))))
                         | _ -> ())))
     | Texp_match (exp, cases, exn_cases, partial) ->
-        cases |> List.iter (fun case -> stepBind case.c_lhs exp);
-        let casesHasSideEffect =
-          cases @ exn_cases |> List.fold_left (fun acc case -> acc || case.c_rhs |> Current.hasSideEffect) false
-        in
-        if casesHasSideEffect then markSideEffect e
+      cases
+      |> List.iter (fun case -> stepBind !Current.cmtModName case.c_lhs exp);
+      let casesHasSideEffect =
+        cases @ exn_cases
+        |> List.fold_left
+             (fun acc case -> acc || case.c_rhs |> Current.hasSideEffect)
+             false
+      in
+      if casesHasSideEffect then markSideEffect e
     | Texp_field (exp, lid, ld) -> (
-      match find (ValueMeta.expr exp) with
+      match find (ValueKind.expr exp) with
       | VS_Top -> ()
       | VS_Set vs ->
         vs
         |> ValueSet.ElemSet.iter (function
              | V_Field (f, eid) when Field.F_Record ld.lbl_name = f ->
-               addValue (ValueMeta.expr exp) (V_Expr eid)
+               addValue (ValueKind.expr exp) (V_Expr eid)
              | _ -> ()))
     | Texp_setfield (exp1, lid, ld, exp2) -> (
-      match find (ValueMeta.expr exp1) with
+      match find (ValueKind.expr exp1) with
       | VS_Top -> ()
       | VS_Set vs ->
         vs
         |> ValueSet.ElemSet.iter (function
              | V_Mutable (eid, f) when ld.lbl_name = f ->
-               addValue (VM_Mutable (eid, f)) (Value.expr exp2)
+               addValue (VK_Mutable (eid, f)) (Value.expr exp2)
              | _ -> ()))
     | Texp_function {arg_label; param; cases; partial} ->
       let bodyHasSideEffect =
@@ -1058,7 +1262,7 @@ module ClosureAnalysis = struct
              (fun acc case -> acc || case.c_rhs |> Current.hasSideEffect)
              false
       in
-      if bodyHasSideEffect then addValue (ValueMeta.expr e) V_FnSideEffect
+      if bodyHasSideEffect then addValue (ValueKind.expr e) V_FnSideEffect
     | Texp_ifthenelse (exp1, exp2, Some exp3) ->
       if
         exp1 |> Current.hasSideEffect
@@ -1086,17 +1290,17 @@ module ClosureAnalysis = struct
       super.expr self e
     in
     let value_binding self vb =
-      stepBind vb.vb_pat vb.vb_expr;
+      stepBind !Current.cmtModName vb.vb_pat vb.vb_expr;
       super.value_binding self vb
     in
     {super with expr; value_binding}
 
   let runStructures strs =
     print_endline "############ closure init ##############";
-    strs |> List.iter (fun (modname, str) ->
-      Current.cmtModName := modname;
-      initMapper.structure initMapper str |> ignore
-    );
+    strs
+    |> List.iter (fun (modname, str) ->
+           Current.cmtModName := modname;
+           initMapper.structure initMapper str |> ignore);
     updated := true;
     let counter = ref 0 in
     print_endline "############ closure step ##############";
@@ -1105,12 +1309,11 @@ module ClosureAnalysis = struct
       Printf.printf "step %d" !counter;
       print_newline ();
       updated := false;
-      Current.graph.nodes |> VMSet.iter (fun vm -> update_transitivity vm);
+      Current.graph.nodes |> VKSet.iter (fun vm -> update_transitivity vm);
       strs
       |> List.iter (fun (modname, str) ->
-          Current.cmtModName := modname;
-          stepMapper.structure stepMapper str |> ignore
-      )
+             Current.cmtModName := modname;
+             stepMapper.structure stepMapper str |> ignore)
     done;
     print_endline "############ closure end ##############"
 end
@@ -1121,30 +1324,36 @@ let traverseTopMostExprMapper (f : expression -> bool) =
   {super with expr}
 
 let collectDeadValues cmts =
-  let deads = ref VMSet.empty in
+  let deads = ref VKSet.empty in
   let isDeadExpr e =
     let isDead =
-      Current.liveness |> Liveness.get (ValueMeta.expr e) = Live.Bot
+      Current.liveness |> Liveness.get (ValueKind.expr e) = Live.Bot
       && not (Current.hasSideEffect e)
     in
-    if isDead then deads := !deads |> VMSet.add (ValueMeta.expr e);
+    if isDead then deads := !deads |> VKSet.add (ValueKind.expr e);
     isDead
   in
   let mapper = traverseTopMostExprMapper isDeadExpr in
-  cmts |> List.iter (fun (modname, str) -> mapper.structure mapper str |> ignore);
+  cmts
+  |> List.iter (fun (modname, str) -> mapper.structure mapper str |> ignore);
   Current.graph.nodes
-  |> VMSet.iter (fun vm ->
+  |> VKSet.iter (fun vm ->
          match vm with
-         | VM_Name (name) ->
+         | VK_Name name ->
            if Current.liveness |> Liveness.get vm = Live.Bot then
-             deads := !deads |> VMSet.add vm
+             deads := !deads |> VKSet.add vm
          | _ -> ());
   !deads
 
 module ValueDependency = struct
   let addEdge a b f =
-    print_string "addEdge "; ValueMeta.print a; print_string " -> "; ValueMeta.print b; print_newline();
+    (* print_string "addEdge "; *)
+    (* ValueKind.print a; *)
+    (* print_string " -> "; *)
+    (* ValueKind.print b; *)
+    (* print_newline (); *)
     Current.graph |> Graph.addEdge a b f
+
   let ( >> ) f g x = g (f x)
 
   module Func = struct
@@ -1152,7 +1361,8 @@ module ValueDependency = struct
      fun x -> if Live.equal x Live.Bot then Live.Bot else l
 
     let iftop l : Live.t -> Live.t =
-      fun x -> if Live.equal x Live.Top then l else Live.Bot
+     fun x -> if Live.equal x Live.Top then l else Live.Bot
+
     let id : Live.t -> Live.t = fun x -> x
   end
 
@@ -1160,21 +1370,22 @@ module ValueDependency = struct
     let (Reduce (eid, eid2, args)) = app in
     match prim.prim_name with
     | _ ->
-      addEdge (ValueMeta.expr e) (VM_Expr eid) (Func.ifnotbot Live.Top);
+      addEdge (ValueKind.expr e) (VK_Expr eid) (Func.ifnotbot Live.Top);
       Some eid2 :: args
       |> List.fold_left
            (fun acc argo ->
              match argo with None -> acc | Some eid -> eid :: acc)
            []
       |> List.iter (fun eid ->
-             addEdge (ValueMeta.expr e) (VM_Expr eid) (Func.ifnotbot Live.Top))
+             addEdge (ValueKind.expr e) (VK_Expr eid) (Func.ifnotbot Live.Top))
 
-  let rec collectBind pat expr (f : Live.t -> Live.t) =
+  let rec collectBind cmtModName pat expr (f : Live.t -> Live.t) =
+    let collectBind = collectBind cmtModName in
     match pat.pat_desc with
     | Tpat_var (id, l) ->
-      addEdge (VM_Name (Id.create !Current.cmtModName id)) (ValueMeta.expr expr) f
+      addEdge (VK_Name (Id.create cmtModName id)) (ValueKind.expr expr) f
     | Tpat_alias (pat, id, l) ->
-      addEdge (VM_Name (Id.create !Current.cmtModName id)) (ValueMeta.expr expr) f;
+      addEdge (VK_Name (Id.create cmtModName id)) (ValueKind.expr expr) f;
       collectBind pat expr f
     | Tpat_tuple pats ->
       pats
@@ -1205,28 +1416,32 @@ module ValueDependency = struct
   let collectExpr e =
     match e.exp_desc with
     | Texp_ident (path, lid, vd) -> (
-        match Current.env |> ModuleEnv.resolvePath !Current.cmtModName path with
-        | [] -> ()
-        | ids -> ids |> List.iter (fun id -> 
-          addEdge (ValueMeta.expr e)
-            (VM_Name (id))
-            Func.id
-        )
-    )
+      match ModuleEnv.resolvePath !Current.cmtModName path with
+      | [] -> ()
+      | ids ->
+        ids
+        |> List.iter (fun id -> addEdge (ValueKind.expr e) (VK_Name id) Func.id)
+      )
     | Texp_constant _ -> ()
     | Texp_let (_, vbs, exp) ->
-      addEdge (ValueMeta.expr e) (ValueMeta.expr exp) Func.id
+      addEdge (ValueKind.expr e) (ValueKind.expr exp) Func.id
     | Texp_function {arg_label; param; cases; partial} ->
-        cases |> List.iter (fun case -> 
-          addEdge (ValueMeta.expr e) (ValueMeta.expr case.c_rhs) (Func.ifnotbot Live.Top);
-          addEdge (ValueMeta.expr e) (ValueMeta.expr case.c_rhs) (Func.iftop Live.Top)
-        )
+      cases
+      |> List.iter (fun case ->
+             addEdge (ValueKind.expr e)
+               (ValueKind.expr case.c_rhs)
+               (Func.ifnotbot Live.Top);
+             addEdge (ValueKind.expr e)
+               (ValueKind.expr case.c_rhs)
+               (Func.iftop Live.Top))
     | Texp_apply (exp, args) ->
-      addEdge (ValueMeta.expr e) (ValueMeta.expr exp) (Func.ifnotbot Live.Top);
-      Current.applications |> Reductions.find (Expr.toId e) |> ReductionSet.elements
+      addEdge (ValueKind.expr e) (ValueKind.expr exp) (Func.ifnotbot Live.Top);
+      Current.applications
+      |> Reductions.find (Expr.toId e)
+      |> ReductionSet.elements
       |> List.iter (fun app ->
              let (Reduce (eid, arg, tl)) = app in
-             match Current.closure |> Closure.find (VM_Expr eid) with
+             match Current.closure |> Closure.find (VK_Expr eid) with
              | VS_Top -> ()
              | VS_Set s ->
                s
@@ -1239,21 +1454,22 @@ module ValueDependency = struct
                         then collectPrimApp prim e app
                       | V_Fn (eid, param) ->
                         let bodies = bodyOfFunction eid in
-                        addEdge (ValueMeta.expr e) (VM_Expr eid)
+                        addEdge (ValueKind.expr e) (VK_Expr eid)
                           (Func.ifnotbot Live.Top);
                         bodies
                         |> List.iter (fun body ->
-                               addEdge (ValueMeta.expr e) (VM_Expr body.exp_id)
+                               addEdge (ValueKind.expr e) (VK_Expr body.exp_id)
                                  Func.id;
-                               collectBind body.pat (Expr.fromId arg) Func.id)
+                               collectBind body.cmtModName body.pat
+                                 (Expr.fromId arg) Func.id)
                       | _ -> ()))
     | Texp_match (exp, cases, exn_cases, _) ->
       cases @ exn_cases
       |> List.iter (fun case ->
-             addEdge (ValueMeta.expr e) (ValueMeta.expr case.c_rhs) Func.id;
+             addEdge (ValueKind.expr e) (ValueKind.expr case.c_rhs) Func.id;
              match case.c_guard with
              | Some guard ->
-               addEdge (ValueMeta.expr e) (ValueMeta.expr guard)
+               addEdge (ValueKind.expr e) (ValueKind.expr guard)
                  (Func.ifnotbot Live.Top)
              | None -> ());
       let cond_base =
@@ -1261,32 +1477,34 @@ module ValueDependency = struct
         |> List.map (fun case -> Live.controlledByPat case.c_lhs)
         |> List.fold_left Live.join Live.Bot
       in
-      cases |> List.iter (fun case -> collectBind case.c_lhs exp Func.id);
-      addEdge (ValueMeta.expr e) (ValueMeta.expr exp) (Func.ifnotbot cond_base)
-    | Texp_try (exp, cases) ->
-      addEdge (ValueMeta.expr e) (ValueMeta.expr exp) Func.id;
       cases
       |> List.iter (fun case ->
-             addEdge (ValueMeta.expr e) (ValueMeta.expr case.c_rhs) Func.id;
+             collectBind !Current.cmtModName case.c_lhs exp Func.id);
+      addEdge (ValueKind.expr e) (ValueKind.expr exp) (Func.ifnotbot cond_base)
+    | Texp_try (exp, cases) ->
+      addEdge (ValueKind.expr e) (ValueKind.expr exp) Func.id;
+      cases
+      |> List.iter (fun case ->
+             addEdge (ValueKind.expr e) (ValueKind.expr case.c_rhs) Func.id;
              match case.c_guard with
              | Some guard ->
-               addEdge (ValueMeta.expr e) (ValueMeta.expr guard)
+               addEdge (ValueKind.expr e) (ValueKind.expr guard)
                  (Func.ifnotbot Live.Top)
              | None -> ())
     | Texp_tuple exps ->
       exps
       |> List.iteri (fun i exp ->
-             addEdge (ValueMeta.expr e) (ValueMeta.expr exp)
+             addEdge (ValueKind.expr e) (ValueKind.expr exp)
                (Live.field_inv (F_Tuple i)))
     | Texp_construct (lid, cstr_desc, exps) ->
       assert (List.length exps = cstr_desc.cstr_arity);
       exps
       |> List.iteri (fun i exp ->
-             addEdge (ValueMeta.expr e) (ValueMeta.expr exp)
+             addEdge (ValueKind.expr e) (ValueKind.expr exp)
                (Live.construct_inv cstr_desc i))
     | Texp_variant (label, None) -> ()
     | Texp_variant (label, Some exp) ->
-      addEdge (ValueMeta.expr e) (ValueMeta.expr exp) (Live.variant_inv label)
+      addEdge (ValueKind.expr e) (ValueKind.expr exp) (Live.variant_inv label)
     | Texp_record {fields; representation; extended_expression} ->
       fields
       |> Array.iter (fun (label_desc, label_def) ->
@@ -1295,31 +1513,50 @@ module ValueDependency = struct
              | Overridden (lid, fe) -> (
                match label_desc.lbl_mut with
                | Immutable ->
-                 addEdge (ValueMeta.expr e) (ValueMeta.expr fe)
+                 addEdge (ValueKind.expr e) (ValueKind.expr fe)
                    (Live.field_inv (F_Record label_desc.lbl_name))
-               | Mutable -> ()))
+               | Mutable ->
+                 addEdge
+                   (ValueKind.mutableField e label_desc.lbl_name)
+                   (ValueKind.expr fe) Func.id))
     | Texp_field (exp, lid, ld) ->
-      addEdge (ValueMeta.expr e) (ValueMeta.expr exp)
+      addEdge (ValueKind.expr e) (ValueKind.expr exp)
         (Live.field (F_Record ld.lbl_name))
-    | Texp_setfield (exp1, lid, label_desc, exp2) -> () (* FIXME *)
+    | Texp_setfield (exp1, lid, label_desc, exp2) -> (
+      match Current.closure |> Closure.find (ValueKind.expr exp1) with
+      | VS_Top -> ()
+      | VS_Set vs ->
+        vs
+        |> ValueSet.ElemSet.iter (fun v ->
+               match v with
+               | V_Mutable (eid, fieldname) when label_desc.lbl_name = fieldname
+                 ->
+                 addEdge
+                   (VK_Mutable (eid, fieldname))
+                   (ValueKind.expr exp2) Func.id
+               | _ -> ()))
     | Texp_array exps ->
       exps
       |> List.iter (fun exp ->
-             addEdge (ValueMeta.expr e) (ValueMeta.expr exp)
+             addEdge (ValueKind.expr e) (ValueKind.expr exp)
                (Func.ifnotbot Live.Top))
     | Texp_ifthenelse (exp1, exp2, Some exp3) ->
-        addEdge (ValueMeta.expr e) (ValueMeta.expr exp1) (Func.ifnotbot Live.Top);
-        addEdge (ValueMeta.expr e) (ValueMeta.expr exp2) Func.id;
-        addEdge (ValueMeta.expr e) (ValueMeta.expr exp3) Func.id
+      addEdge (ValueKind.expr e) (ValueKind.expr exp1) (Func.ifnotbot Live.Top);
+      addEdge (ValueKind.expr e) (ValueKind.expr exp2) Func.id;
+      addEdge (ValueKind.expr e) (ValueKind.expr exp3) Func.id
     | Texp_ifthenelse _ -> ()
     | Texp_sequence (_, exp2) ->
-      addEdge (ValueMeta.expr e) (ValueMeta.expr exp2) Func.id
+      addEdge (ValueKind.expr e) (ValueKind.expr exp2) Func.id
     | Texp_while _ -> ()
     | Texp_for (id, ppat, exp1, exp2, dir_flag, exp_body) ->
-      addEdge (VM_Name (Id.create !Current.cmtModName id)) (ValueMeta.expr exp1) Func.id;
-      addEdge (VM_Name (Id.create !Current.cmtModName id)) (ValueMeta.expr exp2) Func.id
+      addEdge
+        (VK_Name (Id.create !Current.cmtModName id))
+        (ValueKind.expr exp1) Func.id;
+      addEdge
+        (VK_Name (Id.create !Current.cmtModName id))
+        (ValueKind.expr exp2) Func.id
     | Texp_send (exp, meth, expo) ->
-        addEdge (ValueMeta.expr e) (ValueMeta.expr exp) (Func.ifnotbot Live.Top)
+      addEdge (ValueKind.expr e) (ValueKind.expr exp) (Func.ifnotbot Live.Top)
     | _ -> ()
 
   let collectMapper =
@@ -1329,15 +1566,11 @@ module ValueDependency = struct
       super.expr self e
     in
     let value_binding self vb =
-      collectBind vb.vb_pat vb.vb_expr Func.id;
+      collectBind !Current.cmtModName vb.vb_pat vb.vb_expr Func.id;
       super.value_binding self vb
     in
     {super with expr; value_binding}
 end
-
-
-let addChild parent child =
-  Current.env |> ModuleEnv.addMember parent child
 
 let rec getSignature (moduleType : CL.Types.module_type) =
   match moduleType with
@@ -1348,121 +1581,168 @@ let rec getSignature (moduleType : CL.Types.module_type) =
     | _ -> [])
   | _ -> []
 
-let rec processSignatureItem ~parent
-    (si : CL.Types.signature_item) =
+let processStructureItem ~moduleId structureItem =
+  let rec bindMember moduleId (pat : pattern) =
+    let newVar id loc te =
+      ModuleEnv.addMember moduleId id;
+      NewValue.addId id loc te
+    in
+    match pat.pat_desc with
+    | Tpat_var (id, l) ->
+      newVar (Id.create !Current.cmtModName id) l.loc pat.pat_type
+    | Tpat_alias (p, id, l) ->
+      newVar (Id.create !Current.cmtModName id) l.loc pat.pat_type;
+      bindMember moduleId p
+    | Tpat_tuple ps -> ps |> List.iter (bindMember moduleId)
+    | Tpat_construct (_, _, ps) -> ps |> List.iter (bindMember moduleId)
+    | Tpat_variant (_, Some p, _) -> bindMember moduleId p
+    | Tpat_record (fs, _) ->
+      fs |> List.iter (fun (_, _, p) -> bindMember moduleId p)
+    | Tpat_array ps -> ps |> List.iter (bindMember moduleId)
+    | Tpat_or (p1, p2, _) ->
+      bindMember moduleId p1;
+      bindMember moduleId p2
+    | Tpat_lazy p -> bindMember moduleId p
+    | _ -> ()
+  in
+  match structureItem.str_desc with
+  | Tstr_value (_, vbs) ->
+    vbs |> List.iter (fun vb -> bindMember moduleId vb.vb_pat)
+  | _ -> ()
+
+let processStructure ~moduleId structure =
+  structure.str_items |> List.iter (processStructureItem ~moduleId)
+
+let rec processSignatureItem ~moduleId (si : CL.Types.signature_item) =
   match si with
   | Sig_value _ ->
-    print_endline "Sig_value";
+    (* print_endline "Sig_value"; *)
     let id, loc, kind, valType = si |> Compat.getSigValue in
-    let id = Id.create (!Current.cmtModName) id in
-    Id.print parent;
-    print_string " -> ";
-    Id.print id;
-    print_newline();
-    addChild parent id
-  | Sig_module _-> (
-    print_endline "Sig_module";
+    let id = Id.create !Current.cmtModName id in
+    (* Id.print moduleId; *)
+    (* print_string " -> "; *)
+    (* Id.print id; *)
+    (* print_newline (); *)
+    ModuleEnv.addMember moduleId id;
+    NewValue.addId id loc valType
+  | Sig_module _ -> (
+    (* print_endline "Sig_module"; *)
     match si |> Compat.getSigModuleModtype with
     | Some (id, moduleType, moduleLoc) ->
-        let id = Id.create (!Current.cmtModName) id in
-        addChild parent id;
-        getSignature moduleType
-        |> List.iter 
-             (processSignatureItem ~parent:id)
+      let id = Id.create !Current.cmtModName id in
+      ModuleEnv.addMember moduleId id;
+      let signature = getSignature moduleType in
+      processSignature ~moduleId:id signature
     | None -> ())
   | _ -> ()
 
-let topLevelModuleId modname: CL.Ident.t =
-  {name = modname; stamp=0; flags=0}
-
-let processSignature (signature : CL.Types.signature) =
+and processSignature ~moduleId (signature : CL.Types.signature) =
   signature
-  |> List.iter (fun sig_item ->
-         processSignatureItem
-           ~parent:(Id.createTopLevelModuleId !Current.cmtModName)
-           sig_item)
+  |> List.iter (fun sig_item -> processSignatureItem ~moduleId sig_item)
 
-
-let process_module_expr me mid =
-    let signature = getSignature me.mod_type in
-    signature |> List.iter (fun sig_item ->
-      processSignatureItem ~parent:mid sig_item
-    )
-
-let rec bind_member mod_id (pat: pattern) =
-  match pat.pat_desc with
-  | Tpat_var (id, _) -> addChild mod_id (Id.create !Current.cmtModName id)
-  | Tpat_alias (p, id, _) ->
-      addChild mod_id (Id.create !Current.cmtModName id);
-      bind_member mod_id p
-  | Tpat_tuple ps ->
-      ps |> List.iter (bind_member mod_id)
-  | Tpat_construct (_, _, ps) ->
-      ps |> List.iter (bind_member mod_id)
-  | Tpat_variant (_, Some p, _) -> bind_member mod_id p
-  | Tpat_record (fs, _) ->
-      fs |> List.iter (fun (_, _, p) -> bind_member mod_id p)
-  | Tpat_array ps ->
-      ps |> List.iter (bind_member mod_id)
-  | Tpat_or (p1, p2, _) ->
-      bind_member mod_id p1;
-      bind_member mod_id p2
-  | Tpat_lazy p ->
-      bind_member mod_id p
-  | _ -> ()
-
-let process_value_binding mod_id vb =
-  bind_member mod_id vb.vb_pat
-
-let process_structure_item mod_id structureItem =
-  print_endline "process_structure_item";
-  match structureItem.str_desc with
-  | Tstr_value (_, vbs) ->
-      vbs |> List.iter (process_value_binding mod_id)
-  | _ -> ()
-
-let process_structure mod_id structure =
-  structure.str_items |> List.iter (process_structure_item mod_id)
-
-let rec process_module_expr mod_id module_expr =
+let rec processModuleExpr ~moduleId module_expr =
   match module_expr.mod_desc with
-  | Tmod_structure structure -> process_structure mod_id structure
-  | Tmod_constraint (me, _, _, _) -> process_module_expr mod_id me
+  | Tmod_structure structure -> processStructure ~moduleId structure
+  | Tmod_constraint (me, _, _, _) -> processModuleExpr ~moduleId me
+  | _ -> ()
+
+let preprocessFunction e =
+  let eid = Expr.toId e in
+  match e.exp_desc with
+  | Texp_function {param; cases} ->
+    let ids =
+      cases
+      |> List.map (fun case ->
+             {
+               cmtModName = !Current.cmtModName;
+               pat = case.c_lhs;
+               exp_id = Expr.toId case.c_rhs;
+             })
+    in
+    if Hashtbl.mem idToBody eid then raise (RuntimeError "duplicate ident");
+    Hashtbl.add idToBody eid ids
   | _ -> ()
 
 let preprocessMapper =
   let super = CL.Tast_mapper.default in
+  let pat self p =
+    (match p.pat_desc with
+    | Tpat_var (id, l) ->
+      NewValue.addId (Id.create !Current.cmtModName id) l.loc p.pat_type
+    | Tpat_alias (_, id, l) ->
+      NewValue.addId (Id.create !Current.cmtModName id) l.loc p.pat_type
+    | _ -> ());
+    super.pat self p
+  in
   let expr self e =
     let e = super.expr self e in
-    let e = Expr.preprocess e in
-    preprocessFunction e;
-    e
+    let e' = Expr.preprocess e in
+    NewValue.addExpr (Expr.toId e') e;
+    preprocessFunction e';
+    (match e'.exp_desc with
+    | Texp_for (id, ppat, e1, _, _, _) ->
+      NewValue.addId
+        (Id.create !Current.cmtModName id)
+        ppat.ppat_loc e1.exp_type
+    | Texp_record {fields} ->
+      fields
+      |> Array.iter (fun (label_desc, _) ->
+             match label_desc.lbl_mut with
+             | Mutable -> NewValue.addMutableField (Expr.toId e') e' label_desc
+             | Immutable -> ())
+    | _ -> ());
+    e'
   in
   let module_binding self moduleBinding =
-      Print.print_ident moduleBinding.mb_id;
-      print_newline ();
-      let id = Id.create !Current.cmtModName moduleBinding.mb_id in
-      let signature = getSignature moduleBinding.mb_expr.mod_type in
-      signature |> List.iter (fun sig_item ->
-        processSignatureItem ~parent:id sig_item
-      );
-      process_module_expr id moduleBinding.mb_expr;
-      super.module_binding self moduleBinding
+    (* Print.print_ident moduleBinding.mb_id; *)
+    (* print_newline (); *)
+    let id = Id.create !Current.cmtModName moduleBinding.mb_id in
+    let signature = getSignature moduleBinding.mb_expr.mod_type in
+    processSignature ~moduleId:id signature;
+    processModuleExpr ~moduleId:id moduleBinding.mb_expr;
+    super.module_binding self moduleBinding
   in
-  {super with expr; module_binding}
-
+  {super with pat; expr; module_binding}
 
 (* collect structures from cmt *)
 let targetCmtStructures : (string * structure) list ref = ref []
 
+let processCmtStructure modname (structure : CL.Typedtree.structure) =
+  print_endline "processCmtStructure";
+  print_endline modname;
+  (* Print.print_structure structure; *)
+  (* print_newline (); *)
+  processStructure ~moduleId:(Id.createCmtModuleId modname) structure;
+  let structure = preprocessMapper.structure preprocessMapper structure in
+  targetCmtStructures := (modname, structure) :: !targetCmtStructures;
+  let mapper =
+    traverseValueKindMapper (fun vm ->
+        Current.graph.nodes <- VKSet.add vm Current.graph.nodes)
+  in
+  mapper.structure mapper structure |> ignore;
+  (* let _ = Print.print_structure structure in *)
+  ()
+
+let processCmt (cmt_infos : CL.Cmt_format.cmt_infos) =
+  Current.cmtModName := cmt_infos.cmt_modname;
+  let moduleId = Id.createCmtModuleId !Current.cmtModName in
+  match cmt_infos.cmt_annots with
+  | Interface signature ->
+    processSignature ~moduleId signature.sig_type
+  | Implementation structure ->
+    processSignature ~moduleId structure.str_type;
+    processCmtStructure cmt_infos.cmt_modname structure
+  | _ -> ()
 
 let reportDead ~ppf =
   print_endline "############ reportDead ##############";
   print_endline "################ Env #################";
-  Current.env |> ModuleEnv.print;
+  ModuleEnv.print ();
   (* init liveness *)
   print_endline "############ init liveness ##############";
-  Current.liveness |> Liveness.init (Current.graph.nodes |> VMSet.to_seq);
+  print_int (Current.graph.nodes |> VKSet.cardinal);
+  print_newline ();
+  Current.liveness |> Liveness.init (Current.graph.nodes |> VKSet.to_seq);
   (* closure analysis *)
   print_endline "############ closure analysis ##############";
   !targetCmtStructures |> ClosureAnalysis.runStructures;
@@ -1472,12 +1752,12 @@ let reportDead ~ppf =
     print_endline "\n### Reductions ###";
     Current.applications
     |> Hashtbl.iter (fun eid _ ->
-        Printf.printf "Expr(%s): " eid;
+           Printf.printf "Expr(%s): " eid;
            Current.applications |> Reductions.find eid |> ReductionSet.elements
            |> Print.print_list
                 (function
                   | Reduce (eid, eid2, args) ->
-                      Printf.printf "App(%s,[" eid;
+                    Printf.printf "App(%s,[" eid;
                     Some eid2 :: args
                     |> Print.print_list
                          (fun arg ->
@@ -1497,27 +1777,29 @@ let reportDead ~ppf =
     in
     {super with expr}
   in
-  !targetCmtStructures |> List.iter (fun (modname, str) ->
-    Current.cmtModName := modname;
-    mapper.structure mapper str |> ignore);
+  !targetCmtStructures
+  |> List.iter (fun (modname, str) ->
+         Current.cmtModName := modname;
+         mapper.structure mapper str |> ignore);
   (* values dependencies *)
   print_endline
     "######################## Value Dependency #####################";
   let mapper = ValueDependency.collectMapper in
-  !targetCmtStructures |> List.iter (fun (modname, str) ->
-    Current.cmtModName := modname;
-    mapper.structure mapper str |> ignore);
+  !targetCmtStructures
+  |> List.iter (fun (modname, str) ->
+         Current.cmtModName := modname;
+         mapper.structure mapper str |> ignore);
   (* tracking liveness *)
   print_endline
     "######################## Tracking Liveness #####################";
   let dag = Graph.scc Current.graph in
   if !Common.Cli.debug then (
     print_endline "\n### Track liveness ###";
-    print_endline "* Topological order:";
-    dag
-    |> List.iter (fun nodes ->
-           nodes |> Print.print_list ValueMeta.print ", ";
-           print_newline ()));
+    print_endline "* Topological order:"
+    (* dag *)
+    (* |> List.iter (fun nodes -> *)
+    (*        nodes |> Print.print_list ValueKind.print ", "; *)
+    (*        print_newline ()) *));
   let dependentsLives node =
     let dependents = Hashtbl.find_all Current.graph.adj_rev node in
     dependents
@@ -1531,7 +1813,7 @@ let reportDead ~ppf =
          match nodes with
          | [] -> raise (RuntimeError "Empty SCC")
          | [node] ->
-           (* ValueMeta.print node; *)
+           (* ValueKind.print node; *)
            Current.liveness |> Liveness.join node (dependentsLives node)
          | _ ->
            nodes
@@ -1543,45 +1825,20 @@ let reportDead ~ppf =
     print_endline "\n### Liveness, SideEffect ###";
     Current.liveness
     |> Hashtbl.iter (fun k v ->
-           ValueMeta.print k;
+           ValueKind.print k;
            print_string ": ";
            Live.print v;
            (match k with
-           | VM_Expr eid ->
+           | VK_Expr eid ->
              if !Current.sideEffectSet |> ExprIdSet.mem eid then
                print_string ", φ"
            | _ -> ());
+           if Current.isPassedToUnknown k then print_string ", AoU";
            print_newline ()));
   print_endline "###########################################";
   print_endline "##                  DVA                  ##";
   print_endline "###########################################";
   let deadValues = collectDeadValues !targetCmtStructures in
-  deadValues |> VMSet.elements
-  |> List.iter (function vm -> vm |> ValueMeta.report ppf);
+  deadValues |> VKSet.elements
+  |> List.iter (function vm -> vm |> ValueKind.report ppf);
   print_newline ()
-
-let processCmtStructure modname (structure : CL.Typedtree.structure) =
-  print_endline "processCmtStructure";
-  print_endline modname;
-  Print.print_structure structure;
-  print_newline ();
-  structure.str_items |> List.iter (process_structure_item (Id.createTopLevelModuleId modname));
-  let structure = preprocessMapper.structure preprocessMapper structure in
-  targetCmtStructures := (modname, structure) :: !targetCmtStructures;
-  let mapper =
-    traverseValueMetaMapper (fun vm ->
-        Current.graph.nodes <- VMSet.add vm Current.graph.nodes)
-  in
-  mapper.structure mapper structure |> ignore;
-  (* let _ = Print.print_structure structure in *)
-  ()
-
-let processCmt (cmt_infos : CL.Cmt_format.cmt_infos) =
-  Current.cmtModName := cmt_infos.cmt_modname;
-  (match cmt_infos.cmt_annots with
-  | Interface signature ->
-    processSignature signature.sig_type
-  | Implementation structure ->
-    processSignature structure.str_type;
-    processCmtStructure cmt_infos.cmt_modname structure
-  | _ -> ())

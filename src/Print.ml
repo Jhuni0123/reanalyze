@@ -303,7 +303,7 @@ let rec print_type (t: type_expr) =
     | Tvar (Some(s)) -> ps "Tvar "; ps s
     | Tarrow (arg_label, t1, t2, commutable) -> print_type t1; ps " -> "; print_type t2;
     | Ttuple ts -> ps "("; print_list print_type ", " ts; ps ")"
-    | Tconstr (path, _, _) -> ps "Tconstr("; print_path path; ps ")"
+    | Tconstr (path, tes, _) -> ps "Tconstr["; print_path path; ps "]("; tes |> List.iter print_type; ps")"
     | Tobject _ -> ps "Tobject"
     | Tfield _ -> ps "Tfield"
     | Tnil -> ps "Tnil"
