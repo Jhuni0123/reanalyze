@@ -571,7 +571,7 @@ module ValueAnalysis = struct
   }
 
   let shouldReport (va : t) =
-    (not va.loc.loc_ghost)
+    (not va.loc.loc_ghost) && Suppress.filter va.loc.loc_start
     &&
     match va.value with
     | VK_Expr eid ->
