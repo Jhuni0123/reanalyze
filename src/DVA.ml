@@ -934,12 +934,13 @@ module ClosureAnalysis = struct
       markPassedToUnknown (VK_Expr eid);
       markSideEffect e
 
-  let rec patIsTop pat =
+  let rec patIsTop cmtModName pat =
+    let patIsTop = patIsTop cmtModName in
     match pat.pat_desc with
     | Tpat_var (id, l) ->
-      addVESet (VK_Name (Id.create !Current.cmtModName id)) VS_Top
+      addVESet (VK_Name (Id.create cmtModName id)) VS_Top
     | Tpat_alias (pat', id, l) ->
-      addVESet (VK_Name (Id.create !Current.cmtModName id)) VS_Top;
+      addVESet (VK_Name (Id.create cmtModName id)) VS_Top;
       patIsTop pat'
     | Tpat_or (pat1, pat2, _) ->
       patIsTop pat1;
@@ -965,7 +966,7 @@ module ClosureAnalysis = struct
     | Tpat_constant _ -> ()
     | Tpat_tuple pats -> (
       match find (Value.expr expr) with
-      | VS_Top -> pats |> List.iter patIsTop
+      | VS_Top -> pats |> List.iter (patIsTop cmtModName)
       | VS_Set vs ->
         vs
         |> VESet.ElemSet.iter (function
@@ -974,7 +975,7 @@ module ClosureAnalysis = struct
              | _ -> ()))
     | Tpat_construct (lid, cstr_desc, pats) -> (
       match find (Value.expr expr) with
-      | VS_Top -> pats |> List.iter patIsTop
+      | VS_Top -> pats |> List.iter (patIsTop cmtModName)
       | VS_Set vs ->
         vs
         |> VESet.ElemSet.iter (fun v ->
@@ -986,7 +987,7 @@ module ClosureAnalysis = struct
     | Tpat_variant (_, None, _) -> ()
     | Tpat_variant (lbl, Some pat, _) -> (
       match find (Value.expr expr) with
-      | VS_Top -> patIsTop pat
+      | VS_Top -> patIsTop cmtModName pat
       | VS_Set vs ->
         vs
         |> VESet.ElemSet.iter (function
@@ -995,7 +996,7 @@ module ClosureAnalysis = struct
              | _ -> ()))
     | Tpat_record (fields, closed_flag) -> (
       match find (Value.expr expr) with
-      | VS_Top -> fields |> List.iter (fun (_, _, pat) -> patIsTop pat)
+      | VS_Top -> fields |> List.iter (fun (_, _, pat) -> patIsTop cmtModName pat)
       | VS_Set vs ->
         vs
         |> VESet.ElemSet.iter (function
