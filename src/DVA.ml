@@ -1288,8 +1288,10 @@ module ValueDependencyAnalysis = struct
       match ModuleEnv.resolvePath !Current.cmtModName path with
       | [] -> ()
       | ids ->
-        ids |> List.iter (fun id -> addEdge (Value.expr e) (VK_Name id) Func.id)
-      )
+        ids
+        |> List.iter (fun id ->
+               if Hashtbl.mem ValueAnalysis.tbl (VK_Name id) then
+                 addEdge (Value.expr e) (VK_Name id) Func.id))
     | Texp_constant _ -> ()
     | Texp_let (_, vbs, exp) -> addEdge (Value.expr e) (Value.expr exp) Func.id
     | Texp_function {arg_label; param; cases; partial} ->
