@@ -25,54 +25,12 @@ module Id = struct
   let equal a b =
     String.equal (ctx a) (ctx b) && CL.Ident.equal (ident a) (ident b)
 
-  let print (id : t) = Printf.printf "[%s]%s" (ctx id) (name id)
+  let print (id : t) =
+    Printf.printf "[%s]%s#%d" (ctx id) (name id) (ident id).stamp
 end
 
 module IdTbl = Hashtbl.Make (Id)
-
-module ModuleEnv = struct
-  let env : (string, Id.t) Hashtbl.t IdTbl.t = IdTbl.create 10
-
-  let addMember (parent : Id.t) (child : Id.t) =
-    match IdTbl.find_opt env parent with
-    | Some tbl ->
-      (* if not (Hashtbl.mem tbl (CL.Ident.name child)) then *)
-      Hashtbl.add tbl (Id.name child) child
-    | None ->
-      let tbl = Hashtbl.create 10 in
-      Hashtbl.add tbl (Id.name child) child;
-      IdTbl.add env parent tbl
-
-  let resolvePath currentMod (path : CL.Path.t) : Id.t list =
-    let rec _findIdents (p : CL.Path.t) : Id.t list =
-      match p with
-      | Pident id -> (
-        match CL.Ident.persistent id with
-        | true -> [Id.createCmtModuleId (CL.Ident.name id)]
-        | false -> [Id.create currentMod id])
-      | Pdot (sub, name, _) ->
-        let parents = _findIdents sub in
-        parents
-        |> List.map (fun parent ->
-               match IdTbl.find_opt env parent with
-               | Some tbl -> Hashtbl.find_all tbl name
-               | None -> [])
-        |> List.flatten
-      | Papply _ -> []
-    in
-    _findIdents path
-
-  let print () =
-    env
-    |> IdTbl.iter (fun id tbl ->
-           Id.print id;
-           print_endline ":";
-           tbl
-           |> Hashtbl.iter (fun name id' ->
-                  print_string ("  " ^ name ^ ": ");
-                  Id.print id';
-                  print_newline ()))
-end
+module IdSet = Set.Make (Id)
 
 (* Expression ID mapping *)
 module Expr = struct
@@ -634,6 +592,61 @@ module ValueAnalysis = struct
     scc |> Stack.to_seq |> List.of_seq
 end
 
+module ModuleEnv = struct
+  let env : (string, IdSet.t) Hashtbl.t IdTbl.t = IdTbl.create 10
+
+  let addMember (parent : Id.t) (child : Id.t) =
+    match IdTbl.find_opt env parent with
+    | Some tbl ->
+      let set =
+        match Hashtbl.find_opt tbl (Id.name child) with
+        | Some set -> set |> IdSet.add child
+        | None -> IdSet.singleton child
+      in
+      Hashtbl.replace tbl (Id.name child) set
+    | None ->
+      let tbl = Hashtbl.create 10 in
+      Hashtbl.add tbl (Id.name child) (IdSet.singleton child);
+      IdTbl.add env parent tbl
+
+  let resolvePath currentMod (path : CL.Path.t) : IdSet.t =
+    let rec _findIdents (p : CL.Path.t) : IdSet.t =
+      match p with
+      | Pident id -> (
+        match CL.Ident.persistent id with
+        | true -> IdSet.singleton (Id.createCmtModuleId (CL.Ident.name id))
+        | false -> IdSet.singleton (Id.create currentMod id))
+      | Pdot (sub, name, _) ->
+        let parents = _findIdents sub in
+        IdSet.fold
+          (fun parent acc ->
+            match IdTbl.find_opt env parent with
+            | Some tbl -> (
+              match Hashtbl.find_opt tbl name with
+              | None -> acc
+              | Some set -> IdSet.union set acc)
+            | None -> acc)
+          parents IdSet.empty
+      | Papply _ -> IdSet.empty
+    in
+    _findIdents path
+
+  let print () =
+    env
+    |> IdTbl.iter (fun id tbl ->
+           Id.print id;
+           print_endline ":";
+           tbl
+           |> Hashtbl.iter (fun name idset ->
+                  idset
+                  |> IdSet.iter (fun id' ->
+                         print_string ("  " ^ name ^ ": ");
+                         Id.print id';
+                         if Hashtbl.mem ValueAnalysis.tbl (V_Name id') then
+                           Print.print_loc (ValueAnalysis.get (V_Name id')).loc;
+                         print_newline ())))
+end
+
 module Current = struct
   let cmtModName : string ref = ref ""
 end
@@ -728,16 +741,15 @@ module ClosureAnalysis = struct
     match e.exp_desc with
     | Texp_ident (path, lid, vd) -> (
       match vd.val_kind with
-      | Val_reg -> (
-        match ModuleEnv.resolvePath !Current.cmtModName path with
-        | [] -> addVESet (Value.expr e) VS_Top
-        | ids ->
-          ids
-          |> List.iter (fun id ->
-                 let vm = V_Name id in
-                 if Hashtbl.mem ValueAnalysis.tbl vm then
-                   addValue (Value.expr e) (VE_Name id)
-                 else addVESet (Value.expr e) VS_Top))
+      | Val_reg ->
+        let ids = ModuleEnv.resolvePath !Current.cmtModName path in
+        if IdSet.is_empty ids then addVESet (Value.expr e) VS_Top;
+        ids
+        |> IdSet.iter (fun id ->
+               let vm = V_Name id in
+               if Hashtbl.mem ValueAnalysis.tbl vm then
+                 addValue (Value.expr e) (VE_Name id)
+               else addVESet (Value.expr e) VS_Top)
       | Val_prim prim ->
         (* print_endline prim.prim_name; *)
         (* print_endline (string_of_int prim.prim_arity); *)
@@ -1211,14 +1223,12 @@ module ValueDependencyAnalysis = struct
 
   let collectExpr e =
     match e.exp_desc with
-    | Texp_ident (path, lid, vd) -> (
-      match ModuleEnv.resolvePath !Current.cmtModName path with
-      | [] -> ()
-      | ids ->
-        ids
-        |> List.iter (fun id ->
-               if Hashtbl.mem ValueAnalysis.tbl (V_Name id) then
-                 addEdge (Value.expr e) (V_Name id) Func.id))
+    | Texp_ident (path, lid, vd) ->
+      let ids = ModuleEnv.resolvePath !Current.cmtModName path in
+      ids
+      |> IdSet.iter (fun id ->
+             if Hashtbl.mem ValueAnalysis.tbl (V_Name id) then
+               addEdge (Value.expr e) (V_Name id) Func.id)
     | Texp_constant _ -> ()
     | Texp_let (_, vbs, exp) -> addEdge (Value.expr e) (Value.expr exp) Func.id
     | Texp_function {arg_label; param; cases; partial} ->
