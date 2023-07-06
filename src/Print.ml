@@ -61,6 +61,10 @@ let rec print_pattern pat =
         ps "}"
 
 and print_value_binding i (vb: CL.Typedtree.value_binding) =
+    ps "[";
+    let live = (vb.vb_attributes |> Annotation.getAttributePayload ((=) DeadCommon.liveAnnotation)) <> None in
+    if live then ps "@live";
+    ps "]";
     print_pattern vb.vb_pat;
     pe " =";
     pi i;
@@ -101,6 +105,10 @@ and print_module_expr me =
 
 and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
     if p then ps "(";
+    ps "[";
+    let live = (expr.exp_attributes |> Annotation.getAttributePayload ((=) DeadCommon.liveAnnotation)) <> None in
+    if live then ps "@live";
+    ps "]";
     (match expr.exp_desc with
     | Texp_ident (path, lid, vd) ->
             ps "[";print_path path;ps"]";
