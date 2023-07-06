@@ -74,8 +74,7 @@ type se =
   | Fld of label * fld
   (* Side Effect *)
   | SideEffect
-  (* | AppSEff of label * arg *)
-  (* | PrimAppSEff of CL.Primitive.description * arg *)
+  | AppliedToUnknown
 
 module SESet = Set.Make(struct
   type t = se
@@ -96,6 +95,19 @@ let new_memory mod_name : memory_label =
   in
   (mod_name, label)
 
+module Worklist = struct
+  type t = SESet.t ref
+
+  let add x (worklist : t) = worklist := SESet.add x !worklist
+  let mem x (worklist : t) = SESet.mem x !worklist
+
+  let prepare_step (worklist : t) (prev_worklist : t) =
+    prev_worklist := !worklist;
+    worklist := SESet.empty
+end
+
+let worklist : Worklist.t = ref SESet.empty
+let prev_worklist : Worklist.t = ref SESet.empty
 let sc : (se, SESet.t) Hashtbl.t = Hashtbl.create 256
 let reverse_sc : (se, SESet.t) Hashtbl.t = Hashtbl.create 256
 let changed = ref false
@@ -439,8 +451,8 @@ module PrintSE = struct
     (* | exception Not_found -> prerr_string ("label?_" ^ modname ^ "_" ^ string_of_int i) *)
 
   let print_var = function
-    | Val label -> print_summary label
-    | SideEff label -> print_summary label
+    | Val label -> prerr_string "Val ("; print_summary label; prerr_string ")"
+    | SideEff label -> prerr_string "Val ("; print_summary label; prerr_string ")"
 
   let print_param = function
     | None -> ()
@@ -593,12 +605,55 @@ module PrintSE = struct
     show_closure_analysis sc
 end
 
+let lookup_sc se = try Hashtbl.find sc se with Not_found -> SESet.singleton Unknown
+
+exception Escape
+let update_worklist key set =
+  let summarize elt =
+    let idx =
+      match elt with
+      | App (e, (Some _ :: _ | []))
+      | Fld (e, _) ->
+        Worklist.add (Var (Val e)) worklist;
+        Var (Val e)
+      | Var _ | Mem _ | Id _ ->
+        Worklist.add elt worklist;
+        elt
+      | _ -> Worklist.add elt worklist; elt
+      (* | _ -> raise Escape *)
+    in
+    match Hashtbl.find_opt reverse_sc idx with
+    | None -> Hashtbl.add reverse_sc idx (SESet.singleton key)
+    | Some orig -> Hashtbl.replace reverse_sc idx (SESet.add key orig)
+  in
+  match key with
+  | Mem _ | Id _ ->
+    Worklist.add key worklist;
+    SESet.iter (fun se -> try summarize se with Escape -> ()) set
+  | Var _ ->
+    Worklist.add key worklist;
+    SESet.iter (fun se -> try summarize se with Escape -> ()) set
+  | Fld (e, _) -> summarize (Var (Val e))
+  | AppliedToUnknown ->
+    Worklist.add key worklist;
+    SESet.iter (fun se -> try summarize se with Escape -> ()) set
+  | _ -> failwith "Invalid LHS"
+
+let update_sc lhs added =
+  let original = lookup_sc lhs in
+  let diff = SESet.diff added original in
+  if not (SESet.is_empty diff) then (
+    changed := true;
+    update_worklist lhs diff;
+    Hashtbl.replace sc lhs (SESet.union original diff))
+
+
 (* enforce data to be nonempty *)
 let init_sc lhs data =
   (* if data = [] then () *)
   (* else *)
     let set = SESet.of_list data in
-    (* update_worklist lhs set; *)
+    update_worklist lhs set;
     match Hashtbl.find sc lhs with
     | exception Not_found -> Hashtbl.add sc lhs set
     | original -> Hashtbl.replace sc lhs (SESet.union original set)
@@ -918,15 +973,6 @@ let processCmt (cmt_infos : CL.Cmt_format.cmt_infos) =
     processCmtStructure cmt_infos.cmt_modname structure
   | _ -> ()
 
-let lookup_sc se = try Hashtbl.find sc se with Not_found -> SESet.singleton Unknown
-
-let update_sc lhs added =
-  let original = lookup_sc lhs in
-  let diff = SESet.diff added original in
-  if not (SESet.is_empty diff) then (
-    changed := true;
-    Hashtbl.replace sc lhs (SESet.union original diff))
-
 
 let get_context label = fst label
 
@@ -1009,6 +1055,11 @@ let rec reduce_app f args =
   | Some hd :: tl ->
     match f with
     | Unknown ->
+      args |> List.iter (fun arg ->
+        match arg with
+        | None -> ()
+        | Some label -> update_sc AppliedToUnknown (SESet.singleton (Var (Val label)));
+      );
       (SESet.singleton Unknown, SESet.singleton SideEffect)
     | Fn (param, bodies) ->
       let value =
@@ -1052,50 +1103,6 @@ let rec reduce_app f args =
       ) else (SESet.singleton (PrimApp (p, args)), SESet.empty)
     | _ -> (SESet.empty, SESet.empty)
 
-(* let rec elaborate_app_sideeffect f args = *)
-(*   match f with *)
-(*   | Unknown -> SESet.singleton SideEffect *)
-(*   | Fn (param, bodies) -> *)
-(*     (match args with *)
-(*     | [] | None :: _ -> SESet.empty *)
-(*     | Some hd :: tl -> *)
-(*       let seff = bodies |> List.map (fun body -> Var (SideEff body)) in *)
-(*       let apps = *)
-(*         if tl = [] then [] *)
-(*         else bodies |> List.map (fun body -> AppSEff (body, tl)) *)
-(*       in *)
-(*       seff @ apps |> SESet.of_list *)
-(*     ) *)
-(*   | Prim p -> *)
-(*     if front_arg_len args >= p.prim_arity then ( *)
-(*       let prim_args, tl = split_arg p.prim_arity args in *)
-(*       let ret = PrimResolution.value_prim (p, prim_args) in *)
-(*       match tl with *)
-(*       | [] -> ret *)
-(*       | _ -> *)
-(*           SESet.fold (fun se acc -> *)
-(*             SESet.union acc (elaborate_app se tl) *)
-(*           ) ret SESet.empty *)
-(*     ) else SESet.singleton (PrimApp (p, args)) *)
-(*   | App (e, None :: tl') -> *)
-(*     (match args with *)
-(*     | [] | None :: _ -> SESet.empty *)
-(*     | Some hd :: tl -> *)
-(*       SESet.singleton (App (e, Some hd :: merge_args (tl', tl)))) *)
-(*   | PrimApp (p, args') when front_arg_len args' < p.prim_arity -> *)
-(*     let args = merge_args (args', args) in *)
-(*     if front_arg_len args >= p.prim_arity then ( *)
-(*       let prim_args, tl = split_arg p.prim_arity args in *)
-(*       let ret = PrimResolution.value_prim (p, prim_args) in *)
-(*       match tl with *)
-(*       | [] -> ret *)
-(*       | _ -> *)
-(*           SESet.fold (fun se acc -> *)
-(*             SESet.union acc (elaborate_app se tl) *)
-(*           ) ret SESet.empty *)
-(*     ) else SESet.singleton (PrimApp (p, args)) *)
-(*   | _ -> SESet.empty *)
-
 let propagate = function
   | Unknown | Ctor _ | Prim _ | Fn _
   | App (_, None :: _)
@@ -1118,7 +1125,6 @@ let reduce_fld se fld =
       with _ -> SESet.empty)
     | _ -> SESet.empty)
   | _ -> SESet.empty
-
 
 let reduce_value se =
   match se with
@@ -1159,6 +1165,27 @@ let reduce_seff se =
       PrintSE.print_se se;
       failwith "Invalid side effect se"
 
+let reduce_structured_value se =
+  match se with
+  | Var (Val e) ->
+    SESet.filter propagate (lookup_sc (Var (Val e)))
+  | Fn (arg, _) ->
+    update_sc (Var (Val arg)) (SESet.singleton Unknown);
+    SESet.empty
+  | Ctor (Record, mems) ->
+      mems |> List.fold_left (fun acc mem ->
+        let field_values = SESet.filter propagate (lookup_sc (Mem mem)) in
+        SESet.union acc field_values) SESet.empty
+  | Ctor (_, labels) ->
+      labels |> List.fold_left (fun acc label ->
+        let field_values = SESet.filter propagate (lookup_sc (Var (Val label))) in
+        SESet.union acc field_values) SESet.empty
+  | Unknown | Prim _ -> SESet.empty
+  | App (e, None :: _) -> SESet.singleton (Var (Val e))
+  | _ ->
+      PrintSE.print_se se;
+      failwith "Invalid structured value"
+
 let step_sc_for_entry x =
   let set = lookup_sc x in
   match x with
@@ -1195,12 +1222,27 @@ let step_sc_for_entry x =
       | Ctor (Record, l) -> (
         try update_sc (Mem (List.nth l i)) set with _ -> ())
       | _ -> ())
-      
+  | AppliedToUnknown ->
+    let reduced =
+      SESet.fold
+        (fun se acc ->
+          let value = reduce_structured_value se in
+          SESet.union value acc)
+        set SESet.empty
+    in
+    update_sc x reduced
   | _ -> failwith "Invalid LHS"
 
 let step_sc () =
-  let to_be_reduced = Hashtbl.to_seq_keys sc |> SESet.of_seq in
-  to_be_reduced |> SESet.iter (fun x -> step_sc_for_entry x)
+  let to_be_reduced =
+    SESet.fold
+      (fun idx acc ->
+        SESet.union
+          (try Hashtbl.find reverse_sc idx with Not_found -> SESet.empty)
+          acc)
+      !prev_worklist SESet.empty
+  in
+  to_be_reduced |> SESet.iter step_sc_for_entry
 
 let solve () =
   Format.flush_str_formatter () |> ignore;
@@ -1208,6 +1250,7 @@ let solve () =
   while !changed do
     print_endline "step";
     changed := false;
+    Worklist.prepare_step worklist prev_worklist;
     step_sc ()
   done
 
