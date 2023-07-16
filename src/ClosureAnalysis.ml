@@ -446,10 +446,23 @@ let reduce_structured_value se =
       PrintSE.print_se se;
       failwith "Invalid structured value"
 
+let timer = Hashtbl.create 10
+let elapsed_time = Hashtbl.create 10
+let start_timer name = Hashtbl.replace timer name (Unix.gettimeofday ())
+let stop_timer name =
+  let time = Unix.gettimeofday () -. Hashtbl.find timer name in
+  match Hashtbl.find_opt elapsed_time name with
+  | None -> Hashtbl.add elapsed_time name time
+  | Some t -> Hashtbl.replace elapsed_time name (time +. t)
+
+let get_time name =
+  Hashtbl.find_opt elapsed_time name |> Option.value ~default:0.0
+
 let step_sc_for_entry x =
   let set = lookup_sc x in
   match x with
   | Mem _ | Id _ ->
+    start_timer "memid";
     let reduced =
       SESet.fold
         (fun se acc ->
@@ -457,8 +470,10 @@ let step_sc_for_entry x =
           SESet.union value acc)
         set SESet.empty
     in
-    update_sc x reduced
+    update_sc x reduced;
+    stop_timer "memid";
   | Var (Val e) ->
+    start_timer "val";
     let value, seff =
       SESet.fold
         (fun se (acc_value, acc_seff) ->
@@ -467,8 +482,10 @@ let step_sc_for_entry x =
         set (SESet.empty, SESet.empty)
     in
     update_sc (Var (Val e)) value;
-    update_sc (Var (SideEff e)) seff
+    update_sc (Var (SideEff e)) seff;
+    stop_timer "val";
   | Var (SideEff _) ->
+    start_timer "sideeff";
     let reduced =
       SESet.fold
         (fun se acc ->
@@ -476,13 +493,17 @@ let step_sc_for_entry x =
           SESet.union seff acc)
         set SESet.empty
     in
-    update_sc x reduced
+    update_sc x reduced;
+    stop_timer "sideeff";
   | Fld (e, (Record, Some i)) ->
+    start_timer "fld";
     (lookup_sc (Var (Val e))) |> SESet.iter (function
       | Ctor (Record, l) -> (
         try update_sc (Mem (List.nth l i)) set with _ -> ())
-      | _ -> ())
+      | _ -> ());
+    stop_timer "fld";
   | AppliedToUnknown ->
+    start_timer "aou";
     let reduced =
       SESet.fold
         (fun se acc ->
@@ -490,7 +511,8 @@ let step_sc_for_entry x =
           SESet.union value acc)
         set SESet.empty
     in
-    update_sc x reduced
+    update_sc x reduced;
+    stop_timer "aou";
   | _ -> failwith "Invalid LHS"
 
 let step_sc () =
@@ -509,11 +531,19 @@ let solve () =
   Format.flush_str_formatter () |> ignore;
   changed := true;
   while !changed do
+    start_timer "step";
     print_string "step. ";
     Printf.printf "key: %d, values: %d" (sc |> SETbl.length) (SETbl.fold (fun _ set acc -> (set |> SESet.cardinal) + acc) sc 0);
     print_newline ();
     changed := false;
     Worklist.prepare_step worklist prev_worklist;
-    step_sc ()
+    step_sc ();
+    stop_timer "step";
+    print_endline @@ "Time spent in Mem/Id: " ^ string_of_float (get_time "memid");
+    print_endline @@ "Time spent in Val: " ^ string_of_float (get_time "val");
+    print_endline @@ "Time spent in SideEff: " ^ string_of_float (get_time "sideeff");
+    print_endline @@ "Time spent in Fld: " ^ string_of_float (get_time "fld");
+    print_endline @@ "Time spent in AoU: " ^ string_of_float (get_time "aou");
+    print_endline @@ "Time spent in steps: " ^ string_of_float (get_time "step");
   done
 
