@@ -509,7 +509,9 @@ let solve () =
   Format.flush_str_formatter () |> ignore;
   changed := true;
   while !changed do
-    print_endline "step";
+    print_string "step. ";
+    Printf.printf "key: %d, values: %d" (sc |> SETbl.length) (SETbl.fold (fun _ set acc -> (set |> SESet.cardinal) + acc) sc 0);
+    print_newline ();
     changed := false;
     Worklist.prepare_step worklist prev_worklist;
     step_sc ()
