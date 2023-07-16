@@ -440,6 +440,8 @@ let reduce_structured_value se =
         SESet.union acc field_values) SESet.empty
   | Unknown | Prim _ -> SESet.empty
   | App (e, None :: _) -> SESet.singleton (Var (Val e))
+  | PrimApp (prim, args) when front_arg_len args < prim.prim_arity ->
+      SESet.empty
   | _ ->
       PrintSE.print_se se;
       failwith "Invalid structured value"
