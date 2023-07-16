@@ -3,14 +3,15 @@ open CL.Asttypes
 open CL.Longident
 open CL.Types
 
+let ps = prerr_string
+let pn = prerr_newline
+let pe = prerr_endline
+
 let rec pi i =
     match i with
     | 0 -> ()
-    | _ as i -> print_string "  "; pi (i-1)
+    | _ as i -> ps "  "; pi (i-1)
 
-let ps = print_string
-let pn = print_newline
-let pe = print_endline
 
 let psi i s = pi i; ps s
 let pei i s = pi i; pe s
@@ -35,7 +36,7 @@ let rec print_list print_element delimeter l =
 
 let print_ident (id: CL.Ident.t) =
   ps id.name;
-  ps "#";print_int id.stamp
+  ps "#";prerr_int id.stamp
 
 let rec print_pattern pat =
     match pat.pat_desc with
@@ -83,7 +84,7 @@ and print_expressionp i (expr: CL.Typedtree.expression) =
 and print_path (p: CL.Path.t) =
     match p with
     | Pident id -> print_ident id
-    | Pdot (p, s, i) -> print_path p; ps "."; ps s; ps "_"; print_int i;
+    | Pdot (p, s, i) -> print_path p; ps "."; ps s; ps "_"; prerr_int i;
     | Papply (p1, p2) -> print_path p1; ps "("; print_path p2; ps ")";
 
 and print_module_expr me =
@@ -105,10 +106,10 @@ and print_module_expr me =
 
 and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
     if p then ps "(";
-    ps "[";
-    let live = (expr.exp_attributes |> Annotation.getAttributePayload ((=) DeadCommon.liveAnnotation)) <> None in
-    if live then ps "@live";
-    ps "]";
+    (* ps "["; *)
+    (* let live = (expr.exp_attributes |> Annotation.getAttributePayload ((=) DeadCommon.liveAnnotation)) <> None in *)
+    (* if live then ps "@live"; *)
+    (* ps "]"; *)
     (match expr.exp_desc with
     | Texp_ident (path, lid, vd) ->
             ps "[";print_path path;ps"]";
@@ -122,7 +123,7 @@ and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
             (* print_loc vd.val_loc *)
     | Texp_constant (constant) ->
             (match constant with
-            | Const_int n -> print_int n
+            | Const_int n -> prerr_int n
             | Const_char c -> ps "'"; print_char c; ps"'"
             | Const_string (s, so) -> ps "\"";ps s; ps"\""
             | Const_float s -> ps s
