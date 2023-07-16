@@ -233,7 +233,7 @@ let new_memory mod_name : memory_label =
 let worklist : Worklist.t = ref SESet.empty
 let prev_worklist : Worklist.t = ref SESet.empty
 let sc : SESet.t SETbl.t = SETbl.create 256
-let reverse_sc : (se, SESet.t) Hashtbl.t = Hashtbl.create 256
+let reverse_sc : SESet.t SETbl.t = SETbl.create 256
 let changed = ref false
 
 let lookup_sc se = try SETbl.find sc se with Not_found -> SESet.singleton Unknown
@@ -253,9 +253,9 @@ let update_worklist key set =
       | _ -> Worklist.add elt worklist; elt
       (* | _ -> raise Escape *)
     in
-    match Hashtbl.find_opt reverse_sc idx with
-    | None -> Hashtbl.add reverse_sc idx (SESet.singleton key)
-    | Some orig -> Hashtbl.replace reverse_sc idx (SESet.add key orig)
+    match SETbl.find_opt reverse_sc idx with
+    | None -> SETbl.add reverse_sc idx (SESet.singleton key)
+    | Some orig -> SETbl.replace reverse_sc idx (SESet.add key orig)
   in
   match key with
   | Mem _ | Id _ ->

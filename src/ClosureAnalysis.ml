@@ -29,10 +29,10 @@ let rec solve_pat (pat : pattern) (e: Label.t) =
   | Tpat_any | Tpat_constant _ -> []
   | Tpat_var (x, _) ->
     init_sc (Id (Id.create !Current.cmtModName x)) [Var (Val e)];
-    [(CL.Ident.name x, e)]
+    [(x, e)]
   | Tpat_alias (p, x, _) ->
     init_sc (Id (Id.create !Current.cmtModName x)) [Var (Val e)];
-    (CL.Ident.name x, e) :: (solve_pat p e)
+    (solve_pat p e) @ [(x, e)]
   | Tpat_tuple pats ->
     pats |> List.mapi (fun idx pat ->
       let temp = Label.new_temp () in
@@ -76,13 +76,13 @@ let rec solve_pat (pat : pattern) (e: Label.t) =
 let se_of_mb (mb : module_binding) =
   let label = Label.of_module_expr mb.mb_expr in
   init_sc (Id (Id.create !Current.cmtModName mb.mb_id)) [Var (Val label)];
-  ([Ctor (Member (CL.Ident.name mb.mb_id), [label])], [Var (SideEff label)])
+  ([mb.mb_id, label], [Var (SideEff label)])
 
 let se_of_vb (vb : value_binding) =
   let bindings = solve_pat vb.vb_pat (Label.of_expression vb.vb_expr) in
-  let v = bindings |> List.map (fun (name, e) -> Ctor (Member name, [e])) in
+  (* let v = bindings |> List.map (fun (name, e) -> Ctor (Member name, [e])) in *)
   let seff = Var (SideEff (Label.of_expression vb.vb_expr)) in
-  (v, [seff])
+  (bindings, [seff])
 
 let list_split_flatten l =
   let a, b = List.split l in
@@ -98,16 +98,43 @@ let se_of_struct_item (item : structure_item) =
   | Tstr_recmodule mbs ->
     mbs |> List.map se_of_mb |> list_split_flatten
   | Tstr_include {incl_mod; incl_type} ->
-    let value = Label.of_module_expr incl_mod in
-    ([Var (Val value)], [])
+    (* let value = Label.of_module_expr incl_mod in *)
+    (* ([Var (Val value)], []) *)
+    let incl_label = Label.of_module_expr incl_mod in
+    (* rebind included values & modules *)
+    let for_each_sig_item : CL.Types.signature_item -> (CL.Ident.t * Label.t) option = function
+      | Sig_value (x, _) | Sig_module (x, _, _) ->
+        let temp = Label.new_temp () in
+        let id = Id.create !Current.cmtModName x in
+        init_sc (Id id) [(Var (Val temp))];
+        init_sc (Var (Val temp)) [Fld (incl_label, (Member (Id.name id), Some 0))];
+        Some (x, temp)
+      | _ -> None
+    in
+    (incl_type |> List.filter_map for_each_sig_item, [])
+    (* ([Var value], []) *)
   | Tstr_primitive vd ->
     let temp = Label.new_temp () in
     init_sc (Var (Val temp)) [Unknown];
-    ([Ctor (Member (CL.Ident.name vd.val_id), [temp])], [])
+    (* ([Ctor (Member (CL.Ident.name vd.val_id), [temp])], []) *)
+    ([(vd.val_id, temp)], [])
   | _ -> ([], [])
 
+module StringMap = Map.Make (String)
+
 let se_of_struct str =
-  str.str_items |> List.map se_of_struct_item |> list_split_flatten
+  let bindings, seff =
+    str.str_items |> List.map se_of_struct_item |> list_split_flatten
+  in
+  let v = 
+    bindings
+    |> List.map (fun (id, l) -> (CL.Ident.name id, l))
+    |> List.to_seq
+    |> StringMap.of_seq
+    |> StringMap.bindings
+    |> List.map (fun (name, label) -> Ctor (Member (name), [label]))
+  in
+  (v, seff)
 
 let se_of_expr expr =
   let solve_param (expr : Label.t) (pattern) : unit =
@@ -520,7 +547,7 @@ let step_sc () =
     SESet.fold
       (fun idx acc ->
         SESet.union
-          (try Hashtbl.find reverse_sc idx with Not_found -> SESet.empty)
+          (try SETbl.find reverse_sc idx with Not_found -> SESet.empty)
           acc)
       !prev_worklist SESet.empty
   in
@@ -531,12 +558,12 @@ let solve () =
   Format.flush_str_formatter () |> ignore;
   changed := true;
   while !changed do
-    start_timer "step";
     print_string "step. ";
     Printf.printf "key: %d, values: %d" (sc |> SETbl.length) (SETbl.fold (fun _ set acc -> (set |> SESet.cardinal) + acc) sc 0);
     print_newline ();
     changed := false;
     Worklist.prepare_step worklist prev_worklist;
+    start_timer "step";
     step_sc ();
     stop_timer "step";
     print_endline @@ "Time spent in Mem/Id: " ^ string_of_float (get_time "memid");

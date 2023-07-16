@@ -396,20 +396,71 @@ collectBind pat se
       addEdge (expr e) (expr exp2) (Func.ifnotbot Live.Top)
     | Texp_send (exp1, _, None) ->
       addEdge (expr e) (expr exp1) (Func.ifnotbot Live.Top)
-    | Texp_letmodule (x, _, me, e) ->
-      addEdge (Id (Id.create !Current.cmtModName x)) (module_expr me) Func.id
+    | Texp_letmodule (x, _, me, exp) ->
+      addEdge (Id (Id.create !Current.cmtModName x)) (module_expr me) Func.id;
+      addEdge (expr e) (expr exp) Func.id
     | _ -> ()
+
+  let rec bindings_of_pat (pat : pattern) =
+    (* Does not return its set expression, as it does not require screening *)
+    match pat.pat_desc with
+    | Tpat_any | Tpat_constant _ -> []
+    | Tpat_var (x, _) -> [x]
+    | Tpat_alias (p, x, _) -> (bindings_of_pat p) @ [x]
+    | Tpat_tuple pats -> pats |> List.map bindings_of_pat |> List.flatten
+    | Tpat_construct (_, _, pats) ->
+      pats |> List.map bindings_of_pat |> List.flatten
+    | Tpat_variant (_, None, _) -> []
+    | Tpat_variant (_, Some p, _) -> bindings_of_pat p
+    | Tpat_record (fields, _) ->
+        fields |> List.map (fun (_, _, pat) -> bindings_of_pat pat) |> List.flatten
+    | Tpat_array pats -> pats |> List.map bindings_of_pat |> List.flatten
+    | Tpat_lazy p -> bindings_of_pat p
+      (* let temp = new_temp_var () in *)
+      (* init_sc (Var temp) [App_v (e, [])]; *)
+      (* solve_eq p temp update_tbl *)
+    | Tpat_or (lhs, rhs, _) -> (bindings_of_pat lhs) @ (bindings_of_pat rhs)
+
+  let bindings_of_struct_item (item : structure_item) =
+    match item.str_desc with
+    | Tstr_eval _ -> []
+    | Tstr_value (_, vbs) ->
+        vbs |> List.map (fun vb -> bindings_of_pat vb.vb_pat) |> List.flatten
+    | Tstr_module mb -> [mb.mb_id]
+    | Tstr_recmodule mbs -> mbs |> List.map (fun mb -> mb.mb_id)
+    | Tstr_include {incl_type} ->
+      let get_id_opt = function
+        | Sig_value (x, _) | Sig_module (x, _, _) -> Some x
+        | _ -> None
+      in
+      incl_type |> List.filter_map get_id_opt
+    | Tstr_primitive vd -> [vd.val_id]
+    | _ -> []
+
+  let bindings_of_struct (str : structure) =
+    str.str_items
+    |> List.map bindings_of_struct_item
+    |> List.flatten
+    |> List.map (fun id -> (CL.Ident.name id, id))
+    |> List.to_seq
+    |> StringMap.of_seq
+    |> StringMap.bindings
+    |> List.map (fun (_, id) -> id)
 
   let collectModuleExpr (me : module_expr) =
     match me.mod_desc with
     | Tmod_ident (path, _) ->
         collectPath (module_expr me) path Func.id
     | Tmod_structure str ->
-        lookup_sc (module_expr me) |> SESet.iter (function
-          | Ctor (Member name, [label]) ->
-              addEdge (module_expr me) (Var (Val label)) (Func.field (Member name, Some 0))
-          | _ -> ()
-        );
+        let ids = bindings_of_struct str in
+        ids |> List.iter (fun id ->
+          addEdge (module_expr me) (Id (Id.create !Current.cmtModName id)) (Func.field (Member (CL.Ident.name id), Some 0))
+        )
+        (* lookup_sc (module_expr me) |> SESet.iter (function *)
+        (*   | Ctor (Member name, [label]) -> *)
+        (*       addEdge (module_expr me) (Var (Val label)) (Func.field (Member name, Some 0)) *)
+        (*   | _ -> () *)
+        (* ); *)
     | Tmod_functor (x, _, _, mexp) ->
       lookup_sc (module_expr mexp) |> SESet.iter (function
         | Fn (arg, bodies) ->
@@ -501,11 +552,15 @@ collectBind pat se
   let collect cmtMod =
     Current.cmtModName := cmtMod.modname;
     addEdge (Id (Id.createCmtModuleId cmtMod.modname)) (Var (Val cmtMod.label)) Func.id;
-    lookup_sc (Var (Val cmtMod.label)) |> SESet.iter (function
-      | Ctor (Member name, [label]) ->
-          addEdge (Var (Val cmtMod.label)) (Var (Val label)) (Func.field (Member name, Some 0))
-      | _ -> ()
+    let ids = bindings_of_struct cmtMod.structure in
+    ids |> List.iter (fun id ->
+      addEdge (Var (Val cmtMod.label)) (Id (Id.create !Current.cmtModName id)) (Func.field (Member (CL.Ident.name id), Some 0))
     );
+    (* lookup_sc (Var (Val cmtMod.label)) |> SESet.iter (function *)
+    (*   | Ctor (Member name, [label]) -> *)
+    (*       addEdge (Var (Val cmtMod.label)) (Var (Val label)) (Func.field (Member name, Some 0)) *)
+    (*   | _ -> () *)
+    (* ); *)
     collectMapper.structure collectMapper cmtMod.structure |> ignore;
     ()
 
@@ -622,9 +677,9 @@ let rec collectDeadPattern addDeadValue pat =
 let collectDeadValuesMapper addDeadValue =
   let addDeadExpr label = addDeadValue (Var (Val label)) in
   let super = CL.Tast_mapper.default in
-  let value_binding self vb =
-    (* collectDeadPattern addDeadValue vb.vb_pat; *)
-    super.value_binding self vb
+  let pat self p =
+    collectDeadPattern addDeadValue p;
+    super.pat self p
   in
   let expr self e =
     let label = Label.of_expression e in
@@ -647,7 +702,7 @@ let collectDeadValuesMapper addDeadValue =
     ) else super.module_expr self me
 
   in
-  {super with expr; module_expr; value_binding}
+  {super with expr; module_expr; pat}
 
 
 let collectDeadValues cmts =
@@ -679,7 +734,7 @@ let reportDead ~ppf =
   solve ();
   !cmtStructures |> List.iter ValueDependencyAnalysis.collect;
   ValueDependencyAnalysis.solve ();
-  (* PrintSE.print_sc_info (); *)
+  PrintSE.print_sc_info ();
   prerr_endline "============ Dead Values =============";
   let deads = collectDeadValues !cmtStructures in
   deads |> SESet.iter (fun se ->
