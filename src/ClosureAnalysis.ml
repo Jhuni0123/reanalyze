@@ -358,7 +358,7 @@ let reduce_fld se fld =
   | Unknown -> SESet.singleton Unknown
   | Ctor (kappa, l) -> (
     match fld with
-    | kappa', Some i when kappa' = kappa ->
+    | kappa', Some i when kappa' = kappa && i < List.length l ->
       let ith =
         match kappa with
         | Record -> Mem (List.nth l i)

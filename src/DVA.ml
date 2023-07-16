@@ -345,14 +345,14 @@ collectBind pat se
     | Texp_field (exp, _, ld) ->
       lookup_sc (expr exp) |> SESet.iter (function
         | Ctor (Record, mems) ->
-            addEdge (expr e) (Mem (List.nth mems (ld.lbl_pos))) Func.id
+            (try addEdge (expr e) (Mem (List.nth mems (ld.lbl_pos))) Func.id with _ -> ())
         | _ -> ()
       );
       addEdge (expr e) (expr exp) (Func.from_field (Record, Some ld.lbl_pos))
     | Texp_setfield (exp1, _, ld, exp2) ->
       lookup_sc (expr exp1) |> SESet.iter (function
         | Ctor (Record, mems) ->
-            addEdge (Mem (List.nth mems (ld.lbl_pos))) (expr exp2) Func.id
+            (try addEdge (Mem (List.nth mems (ld.lbl_pos))) (expr exp2) Func.id with _ -> ())
         | Unknown ->
             joinLive (expr exp2) Live.Top
         | _ -> ()
