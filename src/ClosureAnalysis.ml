@@ -116,6 +116,7 @@ let se_of_struct_item (item : structure_item) =
   | Tstr_primitive vd ->
     let temp = Label.new_temp () in
     init_sc (Var (Val temp)) [Unknown];
+    init_sc (Id (Id.create !Current.cmtModName vd.val_id)) [Var (Val temp)];
     (* ([Ctor (Member (CL.Ident.name vd.val_id), [temp])], []) *)
     ([(vd.val_id, temp)], [])
   | _ -> ([], [])
