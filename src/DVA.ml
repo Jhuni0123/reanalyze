@@ -21,6 +21,11 @@ let rec isEmptyPropsType (t : type_expr) =
   | Tlink t -> isEmptyPropsType t
   | _ -> false
 
+let annotatedAsLive attributes =
+  attributes
+  |> Annotation.getAttributePayload (( = ) DeadCommon.liveAnnotation)
+  <> None
+
 module Value = struct
   type t =
     | V_Expr of Label.t
@@ -189,6 +194,9 @@ collectBind pat se
           cases
           |> List.iter (fun case ->
             collectBind !Current.cmtModName case.c_lhs (Var (Val param)) Func.id
+          );
+          bodies |> List.iter (fun body ->
+            addEdge (expr e) (Var (Val body)) (Func.iftop Live.Top);
           );
           lookup_sc (Var (Val param)) |> SESet.iter (function
             | Var (Val arg) -> addEdge (Var (Val param)) (Var (Val arg)) Func.id
@@ -401,25 +409,44 @@ collectBind pat se
       addEdge (expr e) (expr exp) Func.id
     | _ -> ()
 
-  let rec bindings_of_pat (pat : pattern) =
-    (* Does not return its set expression, as it does not require screening *)
+  let rec pattern_fold_id_right f (pat : pattern) acc =
+    let recurse = pattern_fold_id_right f in
     match pat.pat_desc with
-    | Tpat_any | Tpat_constant _ -> []
-    | Tpat_var (x, _) -> [x]
-    | Tpat_alias (p, x, _) -> (bindings_of_pat p) @ [x]
-    | Tpat_tuple pats -> pats |> List.map bindings_of_pat |> List.flatten
+    | Tpat_any | Tpat_constant _ -> acc
+    | Tpat_var (x, _) -> acc |> f x
+    | Tpat_alias (p, x, _) -> acc |> f x |> recurse p
+    | Tpat_tuple pats ->
+      acc |> List.fold_right recurse pats
     | Tpat_construct (_, _, pats) ->
-      pats |> List.map bindings_of_pat |> List.flatten
-    | Tpat_variant (_, None, _) -> []
-    | Tpat_variant (_, Some p, _) -> bindings_of_pat p
+      acc |> List.fold_right recurse pats
+    | Tpat_variant (_, None, _) -> acc
+    | Tpat_variant (_, Some p, _) -> acc |> recurse p
     | Tpat_record (fields, _) ->
-        fields |> List.map (fun (_, _, pat) -> bindings_of_pat pat) |> List.flatten
-    | Tpat_array pats -> pats |> List.map bindings_of_pat |> List.flatten
-    | Tpat_lazy p -> bindings_of_pat p
-      (* let temp = new_temp_var () in *)
-      (* init_sc (Var temp) [App_v (e, [])]; *)
-      (* solve_eq p temp update_tbl *)
-    | Tpat_or (lhs, rhs, _) -> (bindings_of_pat lhs) @ (bindings_of_pat rhs)
+      acc |> List.fold_right (fun (_, _, pat) -> recurse pat) fields
+    | Tpat_array pats ->
+      acc |> List.fold_right recurse pats
+    | Tpat_lazy p -> acc |> recurse p
+    | Tpat_or (lhs, rhs, _) -> acc |> recurse rhs |> recurse lhs
+
+  let rec iter_id_in_pat f pat =
+    pattern_fold_id_right (fun p () -> f p) pat ()
+
+  let rec bindings_of_pat (pat : pattern) =
+    pattern_fold_id_right List.cons pat []
+    (* match pat.pat_desc with *)
+    (* | Tpat_any | Tpat_constant _ -> [] *)
+    (* | Tpat_var (x, _) -> [x] *)
+    (* | Tpat_alias (p, x, _) -> (bindings_of_pat p) @ [x] *)
+    (* | Tpat_tuple pats -> pats |> List.map bindings_of_pat |> List.flatten *)
+    (* | Tpat_construct (_, _, pats) -> *)
+    (*   pats |> List.map bindings_of_pat |> List.flatten *)
+    (* | Tpat_variant (_, None, _) -> [] *)
+    (* | Tpat_variant (_, Some p, _) -> bindings_of_pat p *)
+    (* | Tpat_record (fields, _) -> *)
+    (*     fields |> List.map (fun (_, _, pat) -> bindings_of_pat pat) |> List.flatten *)
+    (* | Tpat_array pats -> pats |> List.map bindings_of_pat |> List.flatten *)
+    (* | Tpat_lazy p -> bindings_of_pat p *)
+    (* | Tpat_or (lhs, rhs, _) -> (bindings_of_pat lhs) @ (bindings_of_pat rhs) *)
 
   let bindings_of_struct_item (item : structure_item) =
     match item.str_desc with
@@ -493,6 +520,10 @@ collectBind pat se
     let super = CL.Tast_mapper.default in
     let value_binding self vb =
       collectBind !Current.cmtModName vb.vb_pat (expr vb.vb_expr) Func.id;
+      if vb.vb_attributes |> annotatedAsLive then
+        vb.vb_pat
+        |> iter_id_in_pat (fun id ->
+               joinLive (Id (Id.create !Current.cmtModName id)) Live.Top);
       super.value_binding self vb
     in
     let module_binding self mb =
@@ -588,11 +619,6 @@ collectBind pat se
            | _ ->
              nodes |> List.iter (fun node -> joinLive node Live.Top))
 end
-
-let annotatedAsLive attributes =
-  attributes
-  |> Annotation.getAttributePayload (( = ) DeadCommon.liveAnnotation)
-  <> None
 
 let traverse_ast =
   let super = CL.Tast_mapper.default in
@@ -734,7 +760,7 @@ let reportDead ~ppf =
   solve ();
   !cmtStructures |> List.iter ValueDependencyAnalysis.collect;
   ValueDependencyAnalysis.solve ();
-  PrintSE.print_sc_info ();
+  (* PrintSE.print_sc_info (); *)
   prerr_endline "============ Dead Values =============";
   let deads = collectDeadValues !cmtStructures in
   deads |> SESet.iter (fun se ->
@@ -743,8 +769,12 @@ let reportDead ~ppf =
     | Var (Val label) ->
         (match label |> Label.to_summary with
         | ValueExpr e ->
-            Print.print_expression 0 e.exp;
-            prerr_newline ();
+            (* Print.print_expression 0 e.exp; *)
+            (* prerr_newline (); *)
+            ()
+        | ModExpr me ->
+            (* Print.print_module_expr me.mod_exp; *)
+            (* prerr_newline (); *)
             ()
         | _ -> ()
         )

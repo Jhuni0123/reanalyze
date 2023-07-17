@@ -89,19 +89,23 @@ and print_path (p: CL.Path.t) =
 
 and print_module_expr me =
   (match me.mod_desc with
-  | Tmod_ident (path, lid) -> ps "Tmod_ident "; print_path path; print_lident lid.txt; print_newline ()
+  | Tmod_ident (path, lid) ->
+      ps "Tmod_ident "; print_path path; print_lident lid.txt; print_newline ()
   | Tmod_structure s ->
       pe "Tmod_structure";
       s.str_type |> List.iter print_signature_item;
       print_structure s
-  | Tmod_functor _ -> pe "Tmod_functor"
+  | Tmod_functor _ ->
+      pe "Tmod_functor"
   | Tmod_apply (me1, me2, mc) ->
       pe "Tmod_apply";
       print_module_expr me1;
       print_module_expr me2
-  | Tmod_constraint (me', _, _, _) -> pe "Tmod_constraint";
-  print_module_expr me'
-  | Tmod_unpack _ -> pe "Tmod_unpack"
+  | Tmod_constraint (me', _, _, _) ->
+      pe "Tmod_constraint";
+    print_module_expr me'
+  | Tmod_unpack _ ->
+      pe "Tmod_unpack"
   )
 
 and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
@@ -261,8 +265,10 @@ and print_structure_item (structure_item: CL.Typedtree.structure_item) =
             ps (str_rec_flag rec_flag);
             vbs |> List.iter (print_value_binding 0);
             pn ()
-    | Tstr_primitive _ ->
-        pe "# Structure - primitive"
+    | Tstr_primitive vd ->
+        pe "# Structure - primitive";
+        print_ident vd.val_id;
+        prerr_newline ();
     | Tstr_type _ ->
         pe "# Structure - type"
     | Tstr_typext _ ->

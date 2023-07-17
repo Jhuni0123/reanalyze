@@ -49,6 +49,7 @@ module Label = struct
     exp_context : string;
   }
   type module_expr_summary = {
+    mod_exp: module_expr;
     mod_type : CL.Types.module_type;
     mod_loc : CL.Location.t;
     mod_context : string;
@@ -105,6 +106,7 @@ module Label = struct
   let preprocess_module_expr (me: module_expr) = 
     let label = new_label !Current.cmtModName in
     Hashtbl.add to_summary_tbl label (ModExpr {
+      mod_exp = me;
       mod_type = me.mod_type;
       mod_loc = me.mod_loc;
       mod_context = !Current.cmtModName;
