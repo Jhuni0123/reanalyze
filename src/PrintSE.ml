@@ -36,11 +36,11 @@ let print_code_loc loc =
 let print_summary label =
   let (modname, i) = label in
   match Label.to_summary label with
-  | ValueExpr e -> prerr_string ("Expr_" ^ modname ^ "_" ^ string_of_int i); prerr_string " @ "; print_code_loc e.exp_loc
-  | ModExpr m -> prerr_string ("Mod_" ^ modname ^ "_" ^ string_of_int i); prerr_string " @ "; print_code_loc m.mod_loc
-  | Tmp -> prerr_string ("temp_" ^ modname ^ "_" ^ string_of_int i)
-  | FnParam id -> prerr_string ("param:" ^ CL.Ident.unique_name id)
-  | Path p -> prerr_string ("path:" ^ CL.Path.name p)
+  | ValueExpr e -> prerr_string ("Expr:" ^ modname ^ "_" ^ string_of_int i); prerr_string " @ "; print_code_loc e.exp_loc
+  | ModExpr m -> prerr_string ("Mod:" ^ modname ^ "_" ^ string_of_int i); prerr_string " @ "; print_code_loc m.mod_loc
+  | Tmp -> prerr_string ("Temp:" ^ modname ^ "_" ^ string_of_int i)
+  | FnParam id -> prerr_string ("Param:" ^ modname ^ "_" ^ string_of_int i ^ CL.Ident.unique_name id)
+  | Path p -> prerr_string ("Path:" ^ modname ^ "_" ^ string_of_int i ^ CL.Path.name p)
   | CmtModule modname -> prerr_string ("Module:" ^ modname ^ ":" ^ string_of_int i)
   (* | exception Not_found -> prerr_string ("label?_" ^ modname ^ "_" ^ string_of_int i) *)
 
