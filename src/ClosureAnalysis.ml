@@ -456,8 +456,8 @@ let reduce_seff se =
 
 let reduce_structured_value se =
   match se with
-  | Var (Val e) ->
-    SESet.filter propagate (lookup_sc (Var (Val e)))
+  | Var (Val _) | Id _ ->
+    SESet.filter propagate (lookup_sc se)
   | Fn (arg, bodies) ->
     update_sc (Var (Val arg)) (SESet.singleton Unknown);
     bodies |> List.map (fun body -> Var (Val body)) |> SESet.of_list
