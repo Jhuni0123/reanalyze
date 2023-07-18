@@ -276,6 +276,19 @@ let se_of_expr expr =
     ([val_e], [seff_m; seff_e])
   | Texp_pack me ->
       ([Var (Val (Label.of_module_expr me))], [Var (SideEff (Label.of_module_expr me))])
+  | Texp_send (_, _, None) ->
+    ([Unknown], [SideEffect])
+  | Texp_send (_, _, Some _) ->
+    ([Unknown], [SideEffect])
+  | Texp_letexception (_, e) ->
+    let v = Var (Val (Label.of_expression e)) in
+    let seff = Var (SideEff (Label.of_expression e)) in
+    ([v], [seff])
+  | Texp_lazy exp ->
+    (* let temp = Label.new_temp () in *)
+    (* ([Fn (temp, [Label.of_expression exp])], []) *)
+    (* FIXME: handle lazy *)
+    ([Var (Val (Label.of_expression exp))], [Var (SideEff (Label.of_expression exp))])
   | _ -> ([], [])
 
 let se_of_module_expr (m : CL.Typedtree.module_expr) =

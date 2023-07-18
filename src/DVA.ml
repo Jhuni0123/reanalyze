@@ -400,10 +400,13 @@ collectBind pat se
       if exp3 |> Label.of_expression |> hasSideEffect then
         joinLive (Id (Id.create !Current.cmtModName id)) Live.Top
     | Texp_send (exp1, _, Some exp2) ->
-      addEdge (expr e) (expr exp1) (Func.ifnotbot Live.Top);
-      addEdge (expr e) (expr exp2) (Func.ifnotbot Live.Top)
+      joinLive (expr exp1) Live.Top;
+      joinLive (expr exp2) Live.Top;
+      (* addEdge (expr e) (expr exp1) (Func.ifnotbot Live.Top); *)
+      (* addEdge (expr e) (expr exp2) (Func.ifnotbot Live.Top) *)
     | Texp_send (exp1, _, None) ->
-      addEdge (expr e) (expr exp1) (Func.ifnotbot Live.Top)
+      joinLive (expr exp1) Live.Top;
+      (* addEdge (expr e) (expr exp1) (Func.ifnotbot Live.Top) *)
     | Texp_letmodule (x, _, me, exp) ->
       addEdge (Id (Id.create !Current.cmtModName x)) (module_expr me) Func.id;
       addEdge (expr e) (expr exp) Func.id
@@ -760,7 +763,7 @@ let reportDead ~ppf =
   solve ();
   !cmtStructures |> List.iter ValueDependencyAnalysis.collect;
   ValueDependencyAnalysis.solve ();
-  (* PrintSE.print_sc_info (); *)
+  PrintSE.print_sc_info ();
   prerr_endline "============ Dead Values =============";
   let deads = collectDeadValues !cmtStructures in
   deads |> SESet.iter (fun se ->
@@ -769,8 +772,8 @@ let reportDead ~ppf =
     | Var (Val label) ->
         (match label |> Label.to_summary with
         | ValueExpr e ->
-            (* Print.print_expression 0 e.exp; *)
-            (* prerr_newline (); *)
+            Print.print_expression 0 e.exp;
+            prerr_newline ();
             ()
         | ModExpr me ->
             (* Print.print_module_expr me.mod_exp; *)
@@ -782,7 +785,7 @@ let reportDead ~ppf =
     prerr_newline ()
   );
   (* PrintSE.print_sc_info (); *)
-  (* !cmtStructures |> List.iter (fun cmt_str -> *)
-  (*   Print.print_structure cmt_str.structure; *)
-  (* ); *)
+  !cmtStructures |> List.iter (fun cmt_str ->
+    Print.print_structure cmt_str.structure;
+  );
   ()
