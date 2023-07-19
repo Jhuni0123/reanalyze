@@ -287,9 +287,24 @@ collectBind pat se
              collectBind !Current.cmtModName case.c_lhs (expr exp) Func.id);
       addEdge (expr e) (expr exp) (Func.ifnotbot cond_base);
       let casesHasSideEffect =
-        cases |> List.exists (fun case -> case.c_rhs |> Label.of_expression |> hasSideEffect)
+        List.fold_right (fun case acc ->
+          let acc = acc || case.c_rhs |> Label.of_expression |> hasSideEffect in
+          (match acc, case.c_guard with
+          | true, Some exp_guard -> joinLive (expr exp_guard) Live.Top
+          | _ -> ());
+          acc
+        ) cases false
       in
-      if casesHasSideEffect then
+      let _ =
+        List.fold_right (fun case acc ->
+          let acc = acc || case.c_rhs |> Label.of_expression |> hasSideEffect in
+          (match acc, case.c_guard with
+          | true, Some exp_guard -> joinLive (expr exp_guard) Live.Top
+          | _ -> ());
+          acc
+        ) exn_cases false;
+      in
+      if casesHasSideEffect then (
         let cond =
           cases
           |> List.fold_left
@@ -297,6 +312,7 @@ collectBind pat se
                Live.Bot
         in
         joinLive (expr exp) cond
+      )
     | Texp_try (exp, cases) ->
       addEdge (expr e) (expr exp) Func.id;
       cases
