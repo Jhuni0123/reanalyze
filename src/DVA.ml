@@ -158,7 +158,7 @@ module ValueDependencyAnalysis = struct
       | Tpat_construct (_, cstr_desc, pats) ->
         pats
         |> List.iteri (fun i pat ->
-               collectBind pat se (Func.from_field (Construct cstr_desc, Some i) >> f))
+               collectBind pat se (Func.from_field (Construct cstr_desc.cstr_name, Some i) >> f))
       | Tpat_variant (_, None, _) -> ()
       | Tpat_variant (lbl, Some pat, _) ->
         collectBind pat se (Func.from_field (Variant lbl, Some 0) >> f)
@@ -333,7 +333,7 @@ collectBind pat se
       exps
       |> List.iteri (fun i exp ->
              addEdge (expr e) (expr exp)
-               (Func.field (Construct cstr_desc, Some i)))
+               (Func.field (Construct cstr_desc.cstr_name, Some i)))
     | Texp_variant (_, None) -> ()
     | Texp_variant (label, Some exp) ->
       addEdge (expr e) (expr exp) (Func.field (Variant label, Some 0))

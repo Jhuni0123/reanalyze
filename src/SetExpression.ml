@@ -146,7 +146,7 @@ type memory_label = string * int
 
 type ctor =
   | Variant of string
-  | Construct of constructor_description
+  | Construct of string
   | Record
   | Tuple
   | Member of string

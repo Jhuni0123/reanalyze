@@ -42,7 +42,7 @@ let rec solve_pat (pat : pattern) (e: Label.t) =
   | Tpat_construct (_, cstr_desc, pats) ->
     pats |> List.mapi (fun idx pat ->
       let temp = Label.new_temp () in
-      init_sc (Var (Val temp)) [Fld (e, ((Construct cstr_desc), Some idx))];
+      init_sc (Var (Val temp)) [Fld (e, ((Construct cstr_desc.cstr_name), Some idx))];
       solve_pat pat temp
     ) |> List.flatten
   | Tpat_variant (lbl, p_o, _) ->
@@ -190,7 +190,7 @@ let se_of_expr expr =
   | Texp_construct (_, _, []) ->
     ([], [])
   | Texp_construct (_, cstr_desc, exps) ->
-    let v = [Ctor (Construct cstr_desc, exps |> List.map Label.of_expression)] in
+    let v = [Ctor (Construct cstr_desc.cstr_name, exps |> List.map Label.of_expression)] in
     let seff = exps |> List.map (fun e -> Var (SideEff (Label.of_expression e))) in
     (v, seff)
   | Texp_variant (lbl, Some exp) ->

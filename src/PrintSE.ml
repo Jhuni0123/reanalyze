@@ -54,7 +54,7 @@ let print_param = function
 
 let print_ctor = function
   | Variant k -> prerr_string k
-  | Construct cstr_desc -> prerr_string cstr_desc.cstr_name
+  | Construct cstr -> prerr_string cstr
   | Record -> prerr_string "Record"
   | Tuple -> prerr_string "Tuple"
   | Member name -> prerr_string name

@@ -111,7 +111,7 @@ let rec controlledByPat (pat : pattern) =
   | Tpat_tuple pats ->
     Ctor (CtorMap.singleton Tuple (pats |> List.map controlledByPat))
   | Tpat_construct (_, cstr_desc, pats) ->
-    Ctor (CtorMap.singleton (Construct cstr_desc) (pats |> List.map controlledByPat))
+    Ctor (CtorMap.singleton (Construct cstr_desc.cstr_name) (pats |> List.map controlledByPat))
   | Tpat_variant (label, Some pat, _) ->
     Ctor (CtorMap.singleton (Variant label) [pat |> controlledByPat])
   | Tpat_variant (_, None, _) -> Top
