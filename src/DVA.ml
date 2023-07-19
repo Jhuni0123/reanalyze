@@ -491,10 +491,14 @@ collectBind pat se
         (*       addEdge (module_expr me) (Var (Val label)) (Func.field (Member name, Some 0)) *)
         (*   | _ -> () *)
         (* ); *)
-    | Tmod_functor (x, _, _, mexp) ->
-      lookup_sc (module_expr mexp) |> SESet.iter (function
-        | Fn (arg, bodies) ->
-            addEdge (Id (Id.create !Current.cmtModName x)) (Var (Val arg)) Func.id;
+    | Tmod_functor (x, _, _, _) ->
+      lookup_sc (module_expr me) |> SESet.iter (function
+        | Fn (param, bodies) ->
+            addEdge (Id (Id.create !Current.cmtModName x)) (Var (Val param)) Func.id;
+            lookup_sc (Var (Val param)) |> SESet.iter (function
+              | Var (Val arg) -> addEdge (Var (Val param)) (Var (Val arg)) Func.id
+              | _ -> ()
+            )
         | _ -> ()
       );
     | Tmod_apply (me_f, me_arg, _) ->

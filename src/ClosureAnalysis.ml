@@ -295,7 +295,7 @@ let se_of_module_expr (m : CL.Typedtree.module_expr) =
   match m.mod_desc with
   | Tmod_functor (x, _, _, me) ->
       let param = Label.new_param x in
-      init_sc (Var (Val param)) [Id (Id.create !Current.cmtModName x)];
+      init_sc (Id (Id.create !Current.cmtModName x)) [(Var (Val param))];
     ([Fn (param, [Label.of_module_expr me])], [])
   | Tmod_ident (x, _) ->
     let x = label_of_path x in
