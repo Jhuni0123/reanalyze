@@ -338,40 +338,56 @@ collectBind pat se
     | Texp_variant (label, Some exp) ->
       addEdge (expr e) (expr exp) (Func.field (Variant label, Some 0))
     | Texp_record {fields; representation; extended_expression} ->
-      (* lookup_sc (expr e) |> SESet.iter (function *)
-      (*   | Ctor (Record, mems) -> *)
-      (*       List.combine mems (fields |> Array.to_list) *)
-      (*         |> List.iter (fun (mem, (ld, ldef)) -> *)
-      (*             match ldef with *)
-      (*             | Kept _ -> *)
-      (*                 (match extended_expression with *)
-      (*                 | Some ee -> *)
-      (*                   lookup_sc (expr ee) |> SESet.iter (function *)
-      (*                     | Ctor (Record, eemems) -> *)
-      (*                         addEdge (Mem mem) (Mem (List.nth eemems (ld.lbl_pos))) Func.id *)
-      (*                     | _ -> () *)
-      (*                   ) *)
-      (*                 | None -> ()) *)
-      (*             | Overridden (_, fe) -> *)
-      (*               addEdge (Mem mem) (expr fe) Func.id) *)
-      (*   | _ -> () *)
-      (* ); *)
-      fields |> Array.iter (fun (ld, ldef) ->
-        match ldef with
-        | Overridden (_, fe) ->
-            addEdge (expr e) (expr fe) (Func.field (Record, Some ld.lbl_pos))
-        | Kept _ ->
-            (match extended_expression with 
-            | Some ee ->
-                addEdge (expr e) (expr ee) (Func.filter_field (Record, Some ld.lbl_pos))
-            | _ -> ())
-      )
-    | Texp_field (exp, _, ld) ->
-      lookup_sc (expr exp) |> SESet.iter (function
+      lookup_sc (expr e) |> SESet.iter (function
         | Ctor (Record, mems) ->
-            (try addEdge (expr e) (Mem (List.nth mems (ld.lbl_pos))) Func.id with _ -> ())
+            List.combine mems (fields |> Array.to_list)
+              |> List.iter (fun (mem, (ld, ldef)) ->
+                  addEdge (expr e) (Mem mem) (Func.field (Record, Some ld.lbl_pos));
+                  match ldef with
+                  | Kept _ -> ()
+                      (* (match extended_expression with *)
+                      (* | Some ee -> *)
+                      (*   lookup_sc (expr ee) |> SESet.iter (function *)
+                      (*     | Ctor (Record, eemems) -> *)
+                      (*         addEdge (Mem mem) (Mem (List.nth eemems (ld.lbl_pos))) Func.id *)
+                      (*     | _ -> () *)
+                      (*   ) *)
+                      (* | None -> ()) *)
+                  | Overridden (_, fe) ->
+                    addEdge (Mem mem) (expr fe) Func.id
+              )
         | _ -> ()
       );
+      let fn = fun live ->
+        let fields_live =
+          fields |> Array.map (fun (ld, ldef) ->
+            match ldef with
+            | Overridden _ -> Live.Bot
+            | Kept _ -> live |> Func.field (Record, Some ld.lbl_pos)
+          ) |> Array.to_list
+        in
+        Live.Ctor (CtorMap.singleton Record fields_live)
+      in
+      (match extended_expression with
+      | Some ee -> addEdge (expr e) (expr ee) fn
+      | None -> ())
+
+      (* fields |> Array.iter (fun (ld, ldef) -> *)
+        (* match ldef with *)
+        (* | Overridden (_, fe) -> () *)
+            (* (1* addEdge (expr e) (expr fe) (Func.field (Record, Some ld.lbl_pos)) *1) *)
+        (* | Kept _ -> *)
+            (* (match extended_expression with *) 
+            (* | Some ee -> *)
+            (*     addEdge (expr e) (expr ee) (Func.filter_field (Record, Some ld.lbl_pos)) *)
+            (* | _ -> ()) *)
+      (* ) *)
+    | Texp_field (exp, _, ld) ->
+      (* lookup_sc (expr exp) |> SESet.iter (function *)
+      (*   | Ctor (Record, mems) -> *)
+      (*       (try addEdge (expr e) (Mem (List.nth mems (ld.lbl_pos))) Func.id with _ -> ()) *)
+      (*   | _ -> () *)
+      (* ); *)
       addEdge (expr e) (expr exp) (Func.from_field (Record, Some ld.lbl_pos))
     | Texp_setfield (exp1, _, ld, exp2) ->
       lookup_sc (expr exp1) |> SESet.iter (function
@@ -805,7 +821,7 @@ let reportDead ~ppf =
     prerr_newline ()
   );
   (* PrintSE.print_sc_info (); *)
-  !cmtStructures |> List.iter (fun cmt_str ->
-    Print.print_structure cmt_str.structure;
-  );
+  (* !cmtStructures |> List.iter (fun cmt_str -> *)
+  (*   Print.print_structure cmt_str.structure; *)
+  (* ); *)
   ()
