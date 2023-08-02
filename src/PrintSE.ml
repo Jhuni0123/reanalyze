@@ -181,8 +181,8 @@ let show_se_with_separator set sep =
 let show_sc_tbl (tbl : SESet.t SETbl.t) =
   SETbl.iter
     (fun key data ->
-      if SESet.is_empty data then ()
-      else (
+      (* if SESet.is_empty data then () *)
+      (* else ( *)
         prerr_string "sc :\n";
         print_se key;
         (match key with
@@ -193,7 +193,8 @@ let show_sc_tbl (tbl : SESet.t SETbl.t) =
         Live.get key |> print_live;
         prerr_newline ();
         prerr_newline ();
-        ))
+        )
+    (* ) *)
     tbl
 
 let filter_closure = function

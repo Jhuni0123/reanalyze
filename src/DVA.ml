@@ -232,7 +232,7 @@ collectBind pat se
                 | _ -> ()
               )
             | _ -> ())
-        | PrimApp (prim, Some arg :: tl) when (ClosureAnalysis.front_arg_len tl + 1) >= prim.prim_arity ->
+        | PrimApp (prim, Some arg :: tl) when (front_arg_len tl + 1) >= prim.prim_arity ->
             let prim_args, tl' = (Some arg :: tl) |> ClosureAnalysis.split_arg prim.prim_arity in
             let v, seff = PrimResolution.value_prim (prim, prim_args) in
             if seff |> SESet.mem SideEffect then (
@@ -689,6 +689,9 @@ let preprocess =
 
 let cmtStructures : cmt_structure list ref = ref []
 
+let num_expr = ref 0
+let num_modexpr = ref 0
+
 let processCmtStructure modname (structure : CL.Typedtree.structure) =
   (* print_endline "processCmtStructure"; *)
   (* print_endline modname; *)
@@ -820,6 +823,7 @@ let reportDead ~ppf =
     | _ -> ());
     prerr_newline ()
   );
+
   (* PrintSE.print_sc_info (); *)
   (* !cmtStructures |> List.iter (fun cmt_str -> *)
   (*   Print.print_structure cmt_str.structure; *)

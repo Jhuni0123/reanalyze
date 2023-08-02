@@ -311,11 +311,6 @@ let se_of_module_expr (m : CL.Typedtree.module_expr) =
   | Tmod_unpack (e, _) ->
     ([Var (Val (Label.of_expression e))], [Var (SideEff (Label.of_expression e))])
 
-let rec front_arg_len = function
-  | [] -> 0
-  | None :: _ -> 0
-  | Some _ :: tl -> front_arg_len tl + 1
-
 let rec split_arg n args =
   match n with
   | 0 -> ([], args)
@@ -387,15 +382,6 @@ let rec reduce_app f args =
       (* ) else *)
         (SESet.singleton (PrimApp (p, args)), SESet.empty)
     | _ -> (SESet.empty, SESet.empty)
-
-let propagate = function
-  | Unknown | Ctor _ | Prim _ | Fn _
-  | App (_, None :: _) ->
-    true
-  | PrimApp (prim, args) ->
-      front_arg_len args < prim.prim_arity
-  | SideEffect -> true
-  | _ -> false
 
 let reduce_fld se fld =
   match se with
@@ -559,35 +545,97 @@ let step_sc_for_entry x =
     stop_timer "aou";
   | _ -> failwith "Invalid LHS"
 
-let step_sc () =
-  let to_be_reduced =
-    SESet.fold
-      (fun idx acc ->
-        SESet.union
-          (try SETbl.find reverse_sc idx with Not_found -> SESet.empty)
-          acc)
-      !prev_worklist SESet.empty
-  in
+let step_sc_for_pair (lhs, rhs) =
+  match lhs with
+  | Mem _ | Id _ ->
+    start_timer "memid";
+    let value, _ = reduce_value rhs in
+    update_sc lhs value;
+    stop_timer "memid";
+  | Var (Val e) ->
+    start_timer "val";
+    let value, seff = reduce_value rhs in
+    update_sc (Var (Val e)) value;
+    update_sc (Var (SideEff e)) seff;
+    stop_timer "val";
+  | Var (SideEff _) ->
+    start_timer "sideeff";
+    let seff = reduce_seff rhs in
+    update_sc lhs seff;
+    stop_timer "sideeff";
+  | Fld (e, (Record, Some i)) ->
+    start_timer "fld";
+    (lookup_sc (Var (Val e))) |> SESet.iter (function
+      | Ctor (Record, l) -> (
+        try update_sc (Mem (List.nth l i)) (SESet.singleton rhs) with _ -> ())
+      | _ -> ());
+    stop_timer "fld";
+  | AppliedToUnknown ->
+    start_timer "aou";
+    let value = reduce_structured_value rhs in
+    update_sc lhs value;
+    stop_timer "aou";
+  | _ -> failwith "Invalid LHS"
+
+(* let step_sc () = *)
+  (* let to_be_reduced = *)
+  (*   SESet.fold *)
+  (*     (fun idx acc -> *)
+  (*       SESet.union *)
+  (*         (try SETbl.find reverse_sc idx with Not_found -> SESet.empty) *)
+  (*         acc) *)
+  (*     !prev_worklist SESet.empty *)
+  (* in *)
   (* let to_be_reduced = SETbl.to_seq_keys sc |> SESet.of_seq in *)
-  to_be_reduced |> SESet.iter step_sc_for_entry
+  (* !prev_worklist |> SEPairSet.iter (fun (key, elt) -> *)
+  (*   step_sc_for_pair (key, elt) *)
+  (* ) *)
+  (* to_be_reduced |> SESet.iter step_sc_for_entry *)
+
+let rec step () =
+  match !updated with
+  | [] -> ()
+  | hd :: tl -> 
+    updated := tl;
+    update_worklist hd;
+    !worklist |> WorkItemSet.iter (function
+      | WorkPair (key, elt) ->
+          (* prerr_endline "@@@@@@ WorkPair @@@@@@"; *)
+          (* PrintSE.print_se key; *)
+          (* prerr_newline (); *)
+          (* PrintSE.print_se elt; *)
+          (* prerr_newline (); *)
+          step_sc_for_pair (key, elt)
+      (* | WorkPair (key, elt) -> step_sc_for_entry key *)
+      | WorkKey key ->
+          (* prerr_endline "@@@@@@ WorkKey @@@@@@"; *)
+          (* PrintSE.print_se key; *)
+          (* prerr_newline (); *)
+          step_sc_for_entry key
+    );
+    Worklist.clear worklist;
+    step ()
 
 let solve () =
   Format.flush_str_formatter () |> ignore;
-  changed := true;
-  while !changed do
-    print_string "step. ";
-    Printf.printf "key: %d, values: %d" (sc |> SETbl.length) (SETbl.fold (fun _ set acc -> (set |> SESet.cardinal) + acc) sc 0);
-    print_newline ();
-    changed := false;
-    Worklist.prepare_step worklist prev_worklist;
-    start_timer "step";
-    step_sc ();
-    stop_timer "step";
-    print_endline @@ "Time spent in Mem/Id: " ^ string_of_float (get_time "memid");
-    print_endline @@ "Time spent in Val: " ^ string_of_float (get_time "val");
-    print_endline @@ "Time spent in SideEff: " ^ string_of_float (get_time "sideeff");
-    print_endline @@ "Time spent in Fld: " ^ string_of_float (get_time "fld");
-    print_endline @@ "Time spent in AoU: " ^ string_of_float (get_time "aou");
-    print_endline @@ "Time spent in steps: " ^ string_of_float (get_time "step");
-  done
+  step ()
+  (* while !updated <> [] do *)
+  (* done *)
+  (* changed := true; *)
+  (* while !changed do *)
+  (*   print_string "step. "; *)
+  (*   Printf.printf "key: %d, values: %d" (sc |> SETbl.length) (SETbl.fold (fun _ set acc -> (set |> SESet.cardinal) + acc) sc 0); *)
+  (*   print_newline (); *)
+  (*   changed := false; *)
+  (*   (1* Worklist.prepare_step worklist prev_worklist; *1) *)
+  (*   start_timer "step"; *)
+  (*   step_sc (); *)
+  (*   stop_timer "step"; *)
+  (*   print_endline @@ "Time spent in Mem/Id: " ^ string_of_float (get_time "memid"); *)
+  (*   print_endline @@ "Time spent in Val: " ^ string_of_float (get_time "val"); *)
+  (*   print_endline @@ "Time spent in SideEff: " ^ string_of_float (get_time "sideeff"); *)
+  (*   print_endline @@ "Time spent in Fld: " ^ string_of_float (get_time "fld"); *)
+  (*   print_endline @@ "Time spent in AoU: " ^ string_of_float (get_time "aou"); *)
+  (*   print_endline @@ "Time spent in steps: " ^ string_of_float (get_time "step"); *)
+  (* done *)
 
