@@ -75,6 +75,19 @@ let getDeps se =
       Hashtbl.add graph se deps;
       deps
 
+let print_graph () =
+  prerr_endline "============= Graph =============";
+  graph |> Hashtbl.iter (fun se1 (vd: ValueDependency.t) ->
+    vd.adj |> List.iter (fun (se2, fn) ->
+      PrintSE.print_se se1;
+      prerr_string " --> ";
+      PrintSE.print_se se2;
+      prerr_newline ();
+      PrintSE.print_live (fn Live.Top);
+      prerr_newline ()
+    )
+  )
+
 let addEdge v1 v2 f =
   (* prerr_endline "@@@@@@@@@@@@ addEdge @@@@@@@@@@@"; *)
   (*   PrintSE.print_se v1; *)
@@ -823,7 +836,7 @@ let reportDead ~ppf =
     | _ -> ());
     prerr_newline ()
   );
-
+  print_graph ();
   (* PrintSE.print_sc_info (); *)
   (* !cmtStructures |> List.iter (fun cmt_str -> *)
   (*   Print.print_structure cmt_str.structure; *)
