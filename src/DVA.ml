@@ -111,6 +111,11 @@ let joinLive se live =
   | None -> Hashtbl.add Live.liveness se live
   | Some l -> Hashtbl.replace Live.liveness se (Live.join l live)
 
+let meetLive se live =
+  match Hashtbl.find_opt Live.liveness se with
+  | None -> Hashtbl.add Live.liveness se live
+  | Some l -> Hashtbl.replace Live.liveness se (Live.meet l live)
+
 
 module ValueDependencyAnalysis = struct
   let ( >> ) f g x = g (f x)
@@ -663,13 +668,17 @@ collectBind pat se
     in
     dag
     |> List.iter (fun nodes ->
-           match nodes with
-           | [] -> raise (RuntimeError "Empty SCC")
-           | [node] ->
-             (* Value.print node; *)
-             joinLive node (dependentsLives node)
-           | _ ->
-             nodes |> List.iter (fun node -> joinLive node Live.Top))
+      match nodes with
+      | [] -> raise (RuntimeError "Empty SCC")
+      | [node] ->
+        (* Value.print node; *)
+        joinLive node (dependentsLives node)
+      | _ ->
+          nodes |> List.iter (fun node -> joinLive node Live.Top);
+          for i = 1 to 5 do
+            nodes |> List.iter (fun node -> meetLive node (dependentsLives node))
+          done
+    )
 end
 
 let traverse_ast =
