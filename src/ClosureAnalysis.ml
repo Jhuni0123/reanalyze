@@ -142,10 +142,10 @@ let se_of_expr expr =
     solve_pat pattern expr |> ignore
   in
   match expr.exp_desc with
-  | Texp_ident (_, _, {val_kind = Val_prim prim}) ->
-      (match prim.prim_arity with
-      | 0 -> ([Unknown], [])
-      | _ -> ([Prim prim], []))
+  (* | Texp_ident (_, _, {val_kind = Val_prim prim}) -> *)
+  (*     (match prim.prim_arity with *)
+  (*     | 0 -> ([Unknown], []) *)
+  (*     | _ -> ([Prim prim], [])) *)
   | Texp_ident (x, _, _) -> ([Var (Val (label_of_path x))], [])
   | Texp_constant _ -> ([], [])
   | Texp_let (_, vbs, e) ->
