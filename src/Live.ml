@@ -16,7 +16,8 @@ open CL.Types
 type t =
   | Top
   | Bot
-  | Ctor of t list CtorMap.t
+  | Ctor of t list CtorMap.t (* K1(L1, L2) + K2(L1, L2) *)
+  | Func of t (* () -> L *)
 
 let empty_ctor = Ctor CtorMap.empty
 
@@ -47,6 +48,8 @@ let rec join a b =
       ) cs cs'
     in 
     Ctor merged
+  | Func x, Func y -> Func (join x y)
+  | _ -> Top
 
 let rec meet a b =
   match (a, b) with
@@ -65,6 +68,8 @@ let rec meet a b =
       ) cs cs'
     in 
     Ctor merged
+  | Func x, Func y -> Func (meet x y)
+  | _ -> Bot
 
 (* let variant_inv k l = *)
 (*   match l with *)

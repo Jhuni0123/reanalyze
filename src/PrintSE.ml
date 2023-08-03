@@ -137,6 +137,10 @@ and print_live l =
            v |> print_list print_live ",";
            ps ")")
          "+"
+  | Func body ->
+      prerr_string "() -> (";
+      print_live body;
+      prerr_string ")"
 
 and print_option_list_with_separator l sep =
   let l' = ref l in

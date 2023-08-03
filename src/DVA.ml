@@ -129,9 +129,17 @@ module ValueDependencyAnalysis = struct
 
     let id : Live.t -> Live.t = fun x -> x
 
+    let func : Live.t -> Live.t = fun body -> Func body
+    let body : Live.t -> Live.t = function
+      | Top -> Top
+      | Bot -> Bot
+      | Func b -> b
+      | Ctor _ -> Bot
+
     let field ((ctor, i) : fld) : Live.t -> Live.t = function
       | Top -> Top
       | Bot -> Bot
+      | Func _ -> Bot
       | Ctor cs ->
           match cs |> CtorMap.find_opt ctor with
           | None -> Bot
@@ -214,7 +222,7 @@ collectBind pat se
             collectBind !Current.cmtModName case.c_lhs (Var (Val param)) Func.id
           );
           bodies |> List.iter (fun body ->
-            addEdge (expr e) (Var (Val body)) (Func.iftop Live.Top);
+            addEdge (expr e) (Var (Val body)) Func.body;
           );
           lookup_sc (Var (Val param)) |> SESet.iter (function
             | Var (Val arg) -> addEdge (Var (Val param)) (Var (Val arg)) Func.id
@@ -223,17 +231,18 @@ collectBind pat se
         | _ -> ()
       );
       (* TODO: check below logic once more *)
-      cases
-      |> List.iter (fun case ->
-             addEdge (expr e) (expr case.c_rhs)
-               (Func.ifnotbot Live.Top);
-             addEdge (expr e) (expr case.c_rhs)
-               (Func.iftop Live.Top))
+      (* cases *)
+      (* |> List.iter (fun case -> *)
+      (*        addEdge (expr e) (expr case.c_rhs) *)
+      (*          (Func.ifnotbot Live.Top); *)
+      (*        addEdge (expr e) (expr case.c_rhs) *)
+      (*          (Func.iftop Live.Top)) *)
     | Texp_apply (e_f, args) ->
       lookup_sc (expr e) |> SESet.iter (function
         | App (f, Some arg :: tl) ->
-            joinLive (Var (Val f)) Live.Top;
-            addEdge (expr e) (Var (Val f)) (Func.ifnotbot Live.Top);
+            (* joinLive (Var (Val f)) Live.Top; *)
+            (* addEdge (expr e) (Var (Val f)) (Func.ifnotbot Live.Top); *)
+            (* addEdge (expr e) (Var (Val f)) Func.func; *)
             if lookup_sc (Var (Val f)) |> SESet.mem Unknown then (
               joinLive (Var (Val f)) Live.Top;
               joinLive (Var (Val arg)) Live.Top;
@@ -243,7 +252,7 @@ collectBind pat se
               lookup_sc (Var (Val f)) |> SESet.iter (function 
                 | Fn (arg, bodies) ->
                     bodies |> List.iter (fun body ->
-                      addEdge (expr e) (Var (Val body)) Func.id;
+                      (* addEdge (expr e) (Var (Val body)) Func.id; *)
                       if body |> hasSideEffect then
                         joinLive (Var (Val f)) Live.Top
                     )
@@ -259,7 +268,13 @@ collectBind pat se
             analyze_prim_dep (prim, prim_args);
         | _ -> ()
       );
-      addEdge (expr e) (expr e_f) (Func.ifnotbot Live.Top);
+      let fn = args |> List.fold_left (fun acc arg -> 
+        match arg with
+        | _, Some ae -> fun l -> acc (Live.Func l)
+        | _ -> acc
+      ) Func.id
+      in
+      addEdge (expr e) (expr e_f) fn
       (* (ValueAnalysis.get (Value.expr e)).closure.reductions *)
       (* |> ReductionSet.elements *)
       (* |> List.iter (fun app -> *)
