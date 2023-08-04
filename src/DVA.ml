@@ -270,7 +270,7 @@ collectBind pat se
       );
       let fn = args |> List.fold_left (fun acc arg -> 
         match arg with
-        | _, Some ae -> fun l -> acc (Live.Func l)
+        | _, Some _ -> fun l -> acc (Live.Func l)
         | _ -> acc
       ) Func.id
       in
@@ -681,8 +681,12 @@ collectBind pat se
              dep |> Live.get |> f |> Live.join acc)
            Live.Bot
     in
+    prerr_endline "============ SCC Order =============";
     dag
     |> List.iter (fun nodes ->
+        prerr_int (nodes |> List.length);
+        prerr_newline ();
+        nodes |> List.iter (fun node -> PrintSE.print_se node; prerr_newline ());
       match nodes with
       | [] -> raise (RuntimeError "Empty SCC")
       | [node] ->
@@ -848,8 +852,8 @@ let reportDead ~ppf =
     | Var (Val label) ->
         (match label |> Label.to_summary with
         | ValueExpr e ->
-            Print.print_expression 0 e.exp;
-            prerr_newline ();
+            (* Print.print_expression 0 e.exp; *)
+            (* prerr_newline (); *)
             ()
         | ModExpr me ->
             (* Print.print_module_expr me.mod_exp; *)
