@@ -121,6 +121,8 @@ module ValueDependencyAnalysis = struct
   let ( >> ) f g x = g (f x)
 
   module Func = struct
+    let top : Live.t -> Live.t = fun _ -> Live.Top
+
     let ifnotbot l : Live.t -> Live.t =
      fun x -> if Live.equal x Live.Bot then Live.Bot else l
 
@@ -206,7 +208,8 @@ collectBind pat se
   let analyze_prim_dep : (CL.Primitive.description * Label.t list) -> unit = function
     | {prim_name = "%ignore"}, [_] -> ()
     | prim, args ->
-        args |> List.iter (fun arg -> joinLive (Var (Val arg)) Live.Top)
+        args |> List.iter (fun arg ->
+          addEdge Top (Var (Val arg)) Func.top)
 
   let collectExpr e =
     match e.exp_desc with
@@ -244,17 +247,17 @@ collectBind pat se
             (* addEdge (expr e) (Var (Val f)) (Func.ifnotbot Live.Top); *)
             (* addEdge (expr e) (Var (Val f)) Func.func; *)
             if lookup_sc (Var (Val f)) |> SESet.mem Unknown then (
-              joinLive (Var (Val f)) Live.Top;
-              joinLive (Var (Val arg)) Live.Top;
+              addEdge Top (Var (Val f)) Func.top;
+              addEdge Top (Var (Val arg)) Func.top;
             );
             (match tl with
             | [] ->
               lookup_sc (Var (Val f)) |> SESet.iter (function 
                 | Fn (arg, bodies) ->
                     bodies |> List.iter (fun body ->
-                      (* addEdge (expr e) (Var (Val body)) Func.id; *)
+                      addEdge (expr e) (Var (Val body)) Func.id;
                       if body |> hasSideEffect then
-                        joinLive (Var (Val f)) Live.Top
+                        addEdge Top (Var (Val f)) Func.top
                     )
                 | _ -> ()
               )
@@ -263,7 +266,7 @@ collectBind pat se
             let prim_args, tl' = (Some arg :: tl) |> ClosureAnalysis.split_arg prim.prim_arity in
             let v, seff = PrimResolution.value_prim (prim, prim_args) in
             if seff |> SESet.mem SideEffect then (
-              joinLive (expr e_f) Live.Top
+              addEdge Top (expr e_f) Func.top
             );
             analyze_prim_dep (prim, prim_args);
         | _ -> ()
@@ -323,7 +326,7 @@ collectBind pat se
         List.fold_right (fun case acc ->
           let acc = acc || case.c_rhs |> Label.of_expression |> hasSideEffect in
           (match acc, case.c_guard with
-          | true, Some exp_guard -> joinLive (expr exp_guard) Live.Top
+          | true, Some exp_guard -> addEdge Top (expr exp_guard) Func.top
           | _ -> ());
           acc
         ) cases false
@@ -332,7 +335,7 @@ collectBind pat se
         List.fold_right (fun case acc ->
           let acc = acc || case.c_rhs |> Label.of_expression |> hasSideEffect in
           (match acc, case.c_guard with
-          | true, Some exp_guard -> joinLive (expr exp_guard) Live.Top
+          | true, Some exp_guard -> addEdge Top (expr exp_guard) Func.top
           | _ -> ());
           acc
         ) exn_cases false;
@@ -344,7 +347,7 @@ collectBind pat se
                (fun acc case -> Live.join acc (Live.controlledByPat case.c_lhs))
                Live.Bot
         in
-        joinLive (expr exp) cond
+        addEdge Top (expr exp) (fun _ -> cond)
       )
     | Texp_try (exp, cases) ->
       addEdge (expr e) (expr exp) Func.id;
@@ -427,12 +430,12 @@ collectBind pat se
         | Ctor (Record, mems) ->
             (try addEdge (Mem (List.nth mems (ld.lbl_pos))) (expr exp2) Func.id with _ -> ())
         | Unknown ->
-            joinLive (expr exp2) Live.Top
+            addEdge Top (expr exp2) Func.top
         | _ -> ()
       );
       (* TODO: check once more *)
       (* maybe not need to join *)
-      joinLive (expr exp1) Live.empty_ctor;
+      addEdge Top (expr exp1) (fun _ -> Live.empty_ctor);
       (* joinLive (expr exp2) Live.Top; *)
       (* let fld_se = Fld (Label.of_expression exp1, (Record, Some label_desc.lbl_pos)) in *)
       (* addEdge fld_se (expr exp2) Func.id; *)
@@ -449,28 +452,28 @@ collectBind pat se
       if exp2 |> Label.of_expression |> hasSideEffect
         || exp3 |> Label.of_expression |> hasSideEffect
       then
-        joinLive (expr exp1) Live.Top
+        addEdge Top (expr exp1) Func.top
     | Texp_ifthenelse (exp1, exp2, None) ->
       if exp2 |> Label.of_expression |> hasSideEffect
       then
-        joinLive (expr exp1) Live.Top
+        addEdge Top (expr exp1) Func.top
     | Texp_sequence (_, exp2) ->
       addEdge (expr e) (expr exp2) Func.id
     | Texp_while (exp1, exp2) ->
       if exp2 |> Label.of_expression |> hasSideEffect then
-        joinLive (expr exp1) Live.Top
+        addEdge Top (expr exp1) Func.top
     | Texp_for (id, _, exp1, exp2, _, exp3) ->
       addEdge (Id (Id.create !Current.cmtModName id)) (expr exp1) Func.id;
       addEdge (Id (Id.create !Current.cmtModName id)) (expr exp2) Func.id;
       if exp3 |> Label.of_expression |> hasSideEffect then
-        joinLive (Id (Id.create !Current.cmtModName id)) Live.Top
+        addEdge Top (Id (Id.create !Current.cmtModName id)) Func.top
     | Texp_send (exp1, _, Some exp2) ->
-      joinLive (expr exp1) Live.Top;
-      joinLive (expr exp2) Live.Top;
+      addEdge Top (expr exp1) Func.top;
+      addEdge Top (expr exp2) Func.top;
       (* addEdge (expr e) (expr exp1) (Func.ifnotbot Live.Top); *)
       (* addEdge (expr e) (expr exp2) (Func.ifnotbot Live.Top) *)
     | Texp_send (exp1, _, None) ->
-      joinLive (expr exp1) Live.Top;
+      addEdge Top (expr exp1) Func.top;
       (* addEdge (expr e) (expr exp1) (Func.ifnotbot Live.Top) *)
     | Texp_letmodule (x, _, me, exp) ->
       addEdge (Id (Id.create !Current.cmtModName x)) (module_expr me) Func.id;
@@ -595,7 +598,7 @@ collectBind pat se
       if vb.vb_attributes |> annotatedAsLive then
         vb.vb_pat
         |> iter_id_in_pat (fun id ->
-               joinLive (Id (Id.create !Current.cmtModName id)) Live.Top);
+            addEdge Top (Id (Id.create !Current.cmtModName id)) Func.top);
       super.value_binding self vb
     in
     let module_binding self mb =
@@ -669,7 +672,7 @@ collectBind pat se
 
   let solve () =
     lookup_sc AppliedToUnknown |> SESet.iter (function
-      | Var (Val label) -> joinLive (Var (Val label)) Live.Top
+      | Var (Val label) -> addEdge Top (Var (Val label)) Func.top
       | _ -> ()
     );
     let dag = scc () in
@@ -681,12 +684,12 @@ collectBind pat se
              dep |> Live.get |> f |> Live.join acc)
            Live.Bot
     in
-    prerr_endline "============ SCC Order =============";
+    (* prerr_endline "============ SCC Order ============="; *)
     dag
     |> List.iter (fun nodes ->
-        prerr_int (nodes |> List.length);
-        prerr_newline ();
-        nodes |> List.iter (fun node -> PrintSE.print_se node; prerr_newline ());
+        (* prerr_int (nodes |> List.length); *)
+        (* prerr_newline (); *)
+        (* nodes |> List.iter (fun node -> PrintSE.print_se node; prerr_newline ()); *)
       match nodes with
       | [] -> raise (RuntimeError "Empty SCC")
       | [node] ->
@@ -843,7 +846,7 @@ let reportDead ~ppf =
   solve ();
   !cmtStructures |> List.iter ValueDependencyAnalysis.collect;
   ValueDependencyAnalysis.solve ();
-  PrintSE.print_sc_info ();
+  (* PrintSE.print_sc_info (); *)
   prerr_endline "============ Dead Values =============";
   let deads = collectDeadValues !cmtStructures in
   deads |> SESet.iter (fun se ->
@@ -864,7 +867,7 @@ let reportDead ~ppf =
     | _ -> ());
     prerr_newline ()
   );
-  print_graph ();
+  (* print_graph (); *)
   (* PrintSE.print_sc_info (); *)
   (* !cmtStructures |> List.iter (fun cmt_str -> *)
   (*   Print.print_structure cmt_str.structure; *)

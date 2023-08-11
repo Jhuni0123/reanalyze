@@ -167,6 +167,7 @@ type case = {
 }
 
 type se =
+  | Top
   (* Set variable *)
   | Var of var
   | Id of Id.t
