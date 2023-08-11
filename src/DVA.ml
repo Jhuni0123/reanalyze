@@ -242,26 +242,28 @@ collectBind pat se
       (*          (Func.iftop Live.Top)) *)
     | Texp_apply (e_f, args) ->
       lookup_sc (expr e) |> SESet.iter (function
-        | App (f, Some arg :: tl) ->
-            (* joinLive (Var (Val f)) Live.Top; *)
-            (* addEdge (expr e) (Var (Val f)) (Func.ifnotbot Live.Top); *)
-            (* addEdge (expr e) (Var (Val f)) Func.func; *)
-            if lookup_sc (Var (Val f)) |> SESet.mem Unknown then (
-              addEdge Top (Var (Val f)) Func.top;
-              addEdge Top (Var (Val arg)) Func.top;
-            );
-            (match tl with
-            | [] ->
-              lookup_sc (Var (Val f)) |> SESet.iter (function 
-                | Fn (arg, bodies) ->
-                    bodies |> List.iter (fun body ->
-                      addEdge (expr e) (Var (Val body)) Func.id;
-                      if body |> hasSideEffect then
-                        addEdge Top (Var (Val f)) Func.top
-                    )
-                | _ -> ()
-              )
-            | _ -> ())
+        (* | App (f, Some arg :: tl) -> *)
+        (*     (1* joinLive (Var (Val f)) Live.Top; *1) *)
+        (*     (1* addEdge (expr e) (Var (Val f)) (Func.ifnotbot Live.Top); *1) *)
+        (*     (1* addEdge (expr e) (Var (Val f)) Func.func; *1) *)
+        (*     if lookup_sc (Var (Val f)) |> SESet.mem Unknown then ( *)
+        (*       addEdge Top (Var (Val f)) Func.top; *)
+        (*       addEdge Top (Var (Val arg)) Func.top; *)
+        (*     ); *)
+        (*     (match tl with *)
+        (*     | [] -> *)
+        (*       lookup_sc (Var (Val f)) |> SESet.iter (function *)
+        (*         | Fn (arg, bodies) -> *)
+        (*             bodies |> List.iter (fun body -> *)
+        (*               addEdge (expr e) (Var (Val body)) Func.id; *)
+        (*               if body |> hasSideEffect then *)
+        (*                 addEdge Top (Var (Val f)) Func.top *)
+        (*             ) *)
+        (*         | _ -> () *)
+        (*       ) *)
+        (*     | _ -> ()) *)
+        | App (f, args) ->
+            ()
         | PrimApp (prim, Some arg :: tl) when (front_arg_len tl + 1) >= prim.prim_arity ->
             let prim_args, tl' = (Some arg :: tl) |> ClosureAnalysis.split_arg prim.prim_arity in
             let v, seff = PrimResolution.value_prim (prim, prim_args) in
@@ -271,11 +273,21 @@ collectBind pat se
             analyze_prim_dep (prim, prim_args);
         | _ -> ()
       );
-      let fn = args |> List.fold_left (fun acc arg -> 
-        match arg with
-        | _, Some _ -> fun l -> acc (Live.Func l)
-        | _ -> acc
-      ) Func.id
+      let fn =
+        fun l ->
+          let l' = args |> List.fold_left (fun acc arg -> 
+            match arg with
+            | _, Some _ -> acc
+            | _, None -> Func.body acc
+          ) l
+          in
+          let l'' = l' |> List.fold_right (fun arg acc ->
+            match arg with
+            | _, Some _ -> Live.Func acc
+            | _, None -> acc
+          ) args
+          in
+          l''
       in
       addEdge (expr e) (expr e_f) fn
       (* (ValueAnalysis.get (Value.expr e)).closure.reductions *)
@@ -454,8 +466,7 @@ collectBind pat se
       then
         addEdge Top (expr exp1) Func.top
     | Texp_ifthenelse (exp1, exp2, None) ->
-      if exp2 |> Label.of_expression |> hasSideEffect
-      then
+      if exp2 |> Label.of_expression |> hasSideEffect then
         addEdge Top (expr exp1) Func.top
     | Texp_sequence (_, exp2) ->
       addEdge (expr e) (expr exp2) Func.id
