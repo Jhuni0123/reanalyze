@@ -4,7 +4,7 @@ open CL.Types
 
 exception RuntimeError of string
 
-let rec label_of_path = fun path ->
+let rec label_of_path path =
   match path with
   | CL.Path.Papply (_f, _x) ->
     raise (RuntimeError "I don't know what Papply do.")
@@ -23,7 +23,7 @@ let rec label_of_path = fun path ->
     init_sc (Var (Val label)) [Id (Id.create !Current.cmtModName x)];
     label
 
-let rec solve_pat (pat : pattern) (e: Label.t) =
+let rec solve_pat (pat : pattern) (e : Label.t) =
   (* Does not return its set expression, as it does not require screening *)
   match pat.pat_desc with
   | Tpat_any | Tpat_constant _ -> []
@@ -32,51 +32,55 @@ let rec solve_pat (pat : pattern) (e: Label.t) =
     [(x, e)]
   | Tpat_alias (p, x, _) ->
     init_sc (Id (Id.create !Current.cmtModName x)) [Var (Val e)];
-    (solve_pat p e) @ [(x, e)]
+    solve_pat p e @ [(x, e)]
   | Tpat_tuple pats ->
-    pats |> List.mapi (fun idx pat ->
-      let temp = Label.new_temp () in
-      init_sc (Var (Val temp)) [Fld (e, (Tuple, Some idx))];
-      solve_pat pat temp
-    ) |> List.flatten
+    pats
+    |> List.mapi (fun idx pat ->
+           let temp = Label.new_temp () in
+           init_sc (Var (Val temp)) [Fld (e, (Tuple, Some idx))];
+           solve_pat pat temp)
+    |> List.flatten
   | Tpat_construct (_, cstr_desc, pats) ->
-    pats |> List.mapi (fun idx pat ->
-      let temp = Label.new_temp () in
-      init_sc (Var (Val temp)) [Fld (e, ((Construct cstr_desc.cstr_name), Some idx))];
-      solve_pat pat temp
-    ) |> List.flatten
-  | Tpat_variant (lbl, p_o, _) ->
+    pats
+    |> List.mapi (fun idx pat ->
+           let temp = Label.new_temp () in
+           init_sc (Var (Val temp))
+             [Fld (e, (Construct cstr_desc.cstr_name, Some idx))];
+           solve_pat pat temp)
+    |> List.flatten
+  | Tpat_variant (lbl, p_o, _) -> (
     let constructor = Variant lbl in
-    (match p_o with
+    match p_o with
     | None -> []
     | Some p ->
       let temp = Label.new_temp () in
       init_sc (Var (Val temp)) [Fld (e, (constructor, Some 0))];
-      solve_pat p temp
-    )
+      solve_pat p temp)
   | Tpat_record (fields, _) ->
-      fields |> List.map (fun (_, lbl, pat) ->
-        let temp = Label.new_temp () in
-        init_sc (Var (Val temp)) [Fld (e, (Record, Some lbl.lbl_pos))];
-        solve_pat pat temp) |> List.flatten
+    fields
+    |> List.map (fun (_, lbl, pat) ->
+           let temp = Label.new_temp () in
+           init_sc (Var (Val temp)) [Fld (e, (Record, Some lbl.lbl_pos))];
+           solve_pat pat temp)
+    |> List.flatten
   | Tpat_array pats ->
-    pats |> List.mapi (fun idx pat ->
-      let temp = Label.new_temp () in
-      init_sc (Var (Val temp)) [Fld (e, (Array, Some idx))];
-      solve_pat pat temp
-    ) |> List.flatten
+    pats
+    |> List.mapi (fun idx pat ->
+           let temp = Label.new_temp () in
+           init_sc (Var (Val temp)) [Fld (e, (Array, Some idx))];
+           solve_pat pat temp)
+    |> List.flatten
   | Tpat_lazy p ->
     solve_pat p e
     (* let temp = new_temp_var () in *)
     (* init_sc (Var temp) [App_v (e, [])]; *)
     (* solve_eq p temp update_tbl *)
-  | Tpat_or (lhs, rhs, _) ->
-    (solve_pat lhs e) @ (solve_pat rhs e)
+  | Tpat_or (lhs, rhs, _) -> solve_pat lhs e @ solve_pat rhs e
 
 let se_of_mb (mb : module_binding) =
   let label = Label.of_module_expr mb.mb_expr in
   init_sc (Id (Id.create !Current.cmtModName mb.mb_id)) [Var (Val label)];
-  ([mb.mb_id, label], [Var (SideEff label)])
+  ([(mb.mb_id, label)], [Var (SideEff label)])
 
 let se_of_vb (vb : value_binding) =
   let bindings = solve_pat vb.vb_pat (Label.of_expression vb.vb_expr) in
@@ -91,23 +95,22 @@ let list_split_flatten l =
 let se_of_struct_item (item : structure_item) =
   match item.str_desc with
   | Tstr_eval (e, _) -> ([], [Var (SideEff (Label.of_expression e))])
-  | Tstr_value (_, vbs) ->
-    vbs |> List.map se_of_vb |> list_split_flatten
-  | Tstr_module mb ->
-    se_of_mb mb
-  | Tstr_recmodule mbs ->
-    mbs |> List.map se_of_mb |> list_split_flatten
+  | Tstr_value (_, vbs) -> vbs |> List.map se_of_vb |> list_split_flatten
+  | Tstr_module mb -> se_of_mb mb
+  | Tstr_recmodule mbs -> mbs |> List.map se_of_mb |> list_split_flatten
   | Tstr_include {incl_mod; incl_type} ->
     (* let value = Label.of_module_expr incl_mod in *)
     (* ([Var (Val value)], []) *)
     let incl_label = Label.of_module_expr incl_mod in
     (* rebind included values & modules *)
-    let for_each_sig_item : CL.Types.signature_item -> (CL.Ident.t * Label.t) option = function
+    let for_each_sig_item :
+        CL.Types.signature_item -> (CL.Ident.t * Label.t) option = function
       | Sig_value (x, _) | Sig_module (x, _, _) ->
         let temp = Label.new_temp () in
         let id = Id.create !Current.cmtModName x in
-        init_sc (Id id) [(Var (Val temp))];
-        init_sc (Var (Val temp)) [Fld (incl_label, (Member (Id.name id), Some 0))];
+        init_sc (Id id) [Var (Val temp)];
+        init_sc (Var (Val temp))
+          [Fld (incl_label, (Member (Id.name id), Some 0))];
         Some (x, temp)
       | _ -> None
     in
@@ -127,33 +130,27 @@ let se_of_struct str =
   let bindings, seff =
     str.str_items |> List.map se_of_struct_item |> list_split_flatten
   in
-  let v = 
+  let v =
     bindings
     |> List.map (fun (id, l) -> (CL.Ident.name id, l))
-    |> List.to_seq
-    |> StringMap.of_seq
-    |> StringMap.bindings
-    |> List.map (fun (name, label) -> Ctor (Member (name), [label]))
+    |> List.to_seq |> StringMap.of_seq |> StringMap.bindings
+    |> List.map (fun (name, label) -> Ctor (Member name, [label]))
   in
   (v, seff)
 
 let se_of_expr expr =
-  let solve_param (expr : Label.t) (pattern) : unit =
+  let solve_param (expr : Label.t) pattern : unit =
     solve_pat pattern expr |> ignore
   in
   match expr.exp_desc with
-  | Texp_ident (_, _, {val_kind = Val_prim prim}) ->
-      (match prim.prim_arity with
-      | 0 -> ([Unknown], [])
-      | _ -> ([Prim prim], []))
+  | Texp_ident (_, _, {val_kind = Val_prim prim}) -> (
+    match prim.prim_arity with 0 -> ([Unknown], []) | _ -> ([Prim prim], []))
   | Texp_ident (x, _, _) -> ([Var (Val (label_of_path x))], [])
   | Texp_constant _ -> ([], [])
   | Texp_let (_, vbs, e) ->
-      let _, seff = vbs |> List.map se_of_vb |> list_split_flatten in
-    (
-      [Var (Val (Label.of_expression e))], 
-      (Var (SideEff (Label.of_expression e))) :: seff
-    )
+    let _, seff = vbs |> List.map se_of_vb |> list_split_flatten in
+    ( [Var (Val (Label.of_expression e))],
+      Var (SideEff (Label.of_expression e)) :: seff )
   | Texp_function {param; cases} ->
     let pats = cases |> List.map (fun case -> case.c_lhs) in
     let bodies = cases |> List.map (fun case -> case.c_rhs) in
@@ -162,36 +159,57 @@ let se_of_expr expr =
     pats |> List.iter (solve_param param_label);
     ([Fn (param_label, bodies |> List.map Label.of_expression)], [])
   | Texp_apply (e, args) ->
-    let arg_labels = args |> List.map (fun (_, aeo) -> Option.map Label.of_expression aeo) in
-    let seff = args |> List.fold_left (fun acc (_, exp_o) ->
-      match exp_o with
-      | None -> acc
-      | Some exp -> (Var (SideEff (Label.of_expression exp))) :: acc
-    ) [] in
+    let arg_labels =
+      args |> List.map (fun (_, aeo) -> Option.map Label.of_expression aeo)
+    in
+    let seff =
+      args
+      |> List.fold_left
+           (fun acc (_, exp_o) ->
+             match exp_o with
+             | None -> acc
+             | Some exp -> Var (SideEff (Label.of_expression exp)) :: acc)
+           []
+    in
     let v = [App (Label.of_expression e, arg_labels)] in
-    let seff = (*  AppSEff (Label.of_expression e, arg_labels ) :: *) Var (SideEff (Label.of_expression e)) :: seff in
+    let seff =
+      (*  AppSEff (Label.of_expression e, arg_labels ) :: *)
+      Var (SideEff (Label.of_expression e)) :: seff
+    in
     (v, seff)
   | Texp_match (exp, cases, exn_cases, _) ->
     let pats = cases |> List.map (fun case -> case.c_lhs) in
     let exp_label = Label.of_expression exp in
     let () = pats |> List.iter (solve_param exp_label) in
-    let rhs_labels = (cases @ exn_cases) |> List.map (fun case -> Label.of_expression case.c_rhs) in
+    let rhs_labels =
+      cases @ exn_cases |> List.map (fun case -> Label.of_expression case.c_rhs)
+    in
     let v = rhs_labels |> List.map (fun label -> Var (Val label)) in
     let seff = rhs_labels |> List.map (fun label -> Var (SideEff label)) in
     (v, Var (SideEff (Label.of_expression exp)) :: seff)
   | Texp_try (exp, cases) ->
     let label = Label.of_expression exp in
-    let ses = cases |> List.map (fun case -> Var (Val (Label.of_expression case.c_rhs))) in
+    let ses =
+      cases |> List.map (fun case -> Var (Val (Label.of_expression case.c_rhs)))
+    in
     (Var (Val label) :: ses, [Var (SideEff label)])
   | Texp_tuple exps ->
     let v = [Ctor (Tuple, exps |> List.map Label.of_expression)] in
-    let seff = exps |> List.map (fun e -> Var (SideEff (Label.of_expression e))) in
+    let seff =
+      exps |> List.map (fun e -> Var (SideEff (Label.of_expression e)))
+    in
     (v, seff)
-  | Texp_construct (_, _, []) ->
-    ([], [])
+  | Texp_construct (_, _, []) -> ([], [])
   | Texp_construct (_, cstr_desc, exps) ->
-    let v = [Ctor (Construct cstr_desc.cstr_name, exps |> List.map Label.of_expression)] in
-    let seff = exps |> List.map (fun e -> Var (SideEff (Label.of_expression e))) in
+    let v =
+      [
+        Ctor
+          (Construct cstr_desc.cstr_name, exps |> List.map Label.of_expression);
+      ]
+    in
+    let seff =
+      exps |> List.map (fun e -> Var (SideEff (Label.of_expression e)))
+    in
     (v, seff)
   | Texp_variant (lbl, Some exp) ->
     let v = [Ctor (Variant lbl, [Label.of_expression exp])] in
@@ -199,29 +217,36 @@ let se_of_expr expr =
     (v, seff)
   | Texp_variant (_, None) -> ([], [])
   | Texp_record {fields; extended_expression} ->
-    let for_each_field ((lbl_desc : label_description), (lbl_def : record_label_definition)) =
+    let for_each_field
+        ((lbl_desc : label_description), (lbl_def : record_label_definition)) =
       let mem = new_memory !Current.cmtModName in
-      init_sc (Mem mem) 
+      init_sc (Mem mem)
         (match lbl_def with
-        | Kept _ ->
-          (match extended_expression with
-          | Some e -> [Fld (Label.of_expression e, (Record, Some lbl_desc.lbl_pos))]
+        | Kept _ -> (
+          match extended_expression with
+          | Some e ->
+            [Fld (Label.of_expression e, (Record, Some lbl_desc.lbl_pos))]
           | None -> [])
-        | Overridden (_, e) -> [Var (Val (Label.of_expression e))]
-        );
+        | Overridden (_, e) -> [Var (Val (Label.of_expression e))]);
       mem
     in
-    let v = [Ctor (Record, fields |> Array.map for_each_field |> Array.to_list)] in
+    let v =
+      [Ctor (Record, fields |> Array.map for_each_field |> Array.to_list)]
+    in
     let seff =
       match extended_expression with
       | Some e -> [Var (SideEff (Label.of_expression e))]
       | None -> []
     in
-    let seff = fields |> Array.fold_left (fun acc (_, lbl_def) ->
-      match lbl_def with
-      | Kept _ -> acc
-      | Overridden (_, e) -> Var (SideEff (Label.of_expression e)) :: acc
-    ) seff in
+    let seff =
+      fields
+      |> Array.fold_left
+           (fun acc (_, lbl_def) ->
+             match lbl_def with
+             | Kept _ -> acc
+             | Overridden (_, e) -> Var (SideEff (Label.of_expression e)) :: acc)
+           seff
+    in
     (v, seff)
   | Texp_field (e, _, lbl) ->
     let v = [Fld (Label.of_expression e, (Record, Some lbl.lbl_pos))] in
@@ -239,7 +264,9 @@ let se_of_expr expr =
       mem
     in
     let v = [Ctor (Array, exps |> List.map for_each_expr_val)] in
-    let seff = exps |> List.map (fun e -> Var (SideEff (Label.of_expression e))) in
+    let seff =
+      exps |> List.map (fun e -> Var (SideEff (Label.of_expression e)))
+    in
     (v, seff)
   | Texp_ifthenelse (exp, exp_true, Some exp_false) ->
     let val1 = Var (Val (Label.of_expression exp_true)) in
@@ -275,11 +302,10 @@ let se_of_expr expr =
     let seff_e = Var (SideEff (Label.of_expression e)) in
     ([val_e], [seff_m; seff_e])
   | Texp_pack me ->
-      ([Var (Val (Label.of_module_expr me))], [Var (SideEff (Label.of_module_expr me))])
-  | Texp_send (_, _, None) ->
-    ([Unknown], [SideEffect])
-  | Texp_send (_, _, Some _) ->
-    ([Unknown], [SideEffect])
+    ( [Var (Val (Label.of_module_expr me))],
+      [Var (SideEff (Label.of_module_expr me))] )
+  | Texp_send (_, _, None) -> ([Unknown], [SideEffect])
+  | Texp_send (_, _, Some _) -> ([Unknown], [SideEffect])
   | Texp_letexception (_, e) ->
     let v = Var (Val (Label.of_expression e)) in
     let seff = Var (SideEff (Label.of_expression e)) in
@@ -288,38 +314,43 @@ let se_of_expr expr =
     (* let temp = Label.new_temp () in *)
     (* ([Fn (temp, [Label.of_expression exp])], []) *)
     (* FIXME: handle lazy *)
-    ([Var (Val (Label.of_expression exp))], [Var (SideEff (Label.of_expression exp))])
+    ( [Var (Val (Label.of_expression exp))],
+      [Var (SideEff (Label.of_expression exp))] )
   | _ -> ([], [])
 
 let se_of_module_expr (m : CL.Typedtree.module_expr) =
   match m.mod_desc with
   | Tmod_functor (x, _, _, me) ->
-      let param = Label.new_param x in
-      init_sc (Id (Id.create !Current.cmtModName x)) [(Var (Val param))];
+    let param = Label.new_param x in
+    init_sc (Id (Id.create !Current.cmtModName x)) [Var (Val param)];
     ([Fn (param, [Label.of_module_expr me])], [])
   | Tmod_ident (x, _) ->
     let x = label_of_path x in
     ([Var (Val x)], [])
   | Tmod_structure structure -> se_of_struct structure
   | Tmod_apply (func, arg, _) ->
-    let v = [App (Label.of_module_expr func, [Some (Label.of_module_expr arg)])] in
+    let v =
+      [App (Label.of_module_expr func, [Some (Label.of_module_expr arg)])]
+    in
     let seff_f = Var (SideEff (Label.of_module_expr func)) in
     let seff_arg = Var (SideEff (Label.of_module_expr arg)) in
     (v, [seff_f; seff_arg])
   | Tmod_constraint (m, _, _, _) ->
-    ([Var (Val (Label.of_module_expr m))], [Var (SideEff (Label.of_module_expr m))])
+    ( [Var (Val (Label.of_module_expr m))],
+      [Var (SideEff (Label.of_module_expr m))] )
   | Tmod_unpack (e, _) ->
-    ([Var (Val (Label.of_expression e))], [Var (SideEff (Label.of_expression e))])
+    ( [Var (Val (Label.of_expression e))],
+      [Var (SideEff (Label.of_expression e))] )
 
 let rec split_arg n args =
   match n with
   | 0 -> ([], args)
-  | _ ->
-      match args with
-      | Some hd :: tl ->
-          let hds, rem = split_arg (n-1) tl in
-          (hd :: hds, rem)
-      | _ -> raise (RuntimeError "Invalid args")
+  | _ -> (
+    match args with
+    | Some hd :: tl ->
+      let hds, rem = split_arg (n - 1) tl in
+      (hd :: hds, rem)
+    | _ -> raise (RuntimeError "Invalid args"))
 
 let rec merge_args = function
   | [], l -> l
@@ -330,30 +361,30 @@ let rec merge_args = function
 let rec reduce_app f args =
   match args with
   | [] | None :: _ -> (SESet.empty, SESet.empty)
-  | Some hd :: tl ->
+  | Some hd :: tl -> (
     match f with
     | Unknown ->
-      args |> List.iter (fun arg ->
-        match arg with
-        | None -> ()
-        | Some label -> update_sc AppliedToUnknown (SESet.singleton (Var (Val label)));
-      );
+      args
+      |> List.iter (fun arg ->
+             match arg with
+             | None -> ()
+             | Some label ->
+               update_sc AppliedToUnknown (SESet.singleton (Var (Val label))));
       (SESet.singleton Unknown, SESet.singleton SideEffect)
     | Fn (param, bodies) ->
       let value =
         bodies
-          |> List.map (fun body -> if tl = [] then Var (Val body) else App (body, tl))
-          |> SESet.of_list
+        |> List.map (fun body ->
+               if tl = [] then Var (Val body) else App (body, tl))
+        |> SESet.of_list
       in
       let seff =
-        bodies
-          |> List.map (fun body -> Var (SideEff body))
-          |> SESet.of_list
+        bodies |> List.map (fun body -> Var (SideEff body)) |> SESet.of_list
       in
       update_sc (Var (Val param)) (SESet.singleton (Var (Val hd)));
       (value, seff)
     | Prim p ->
-      SESet.singleton (PrimApp (p, args)), SESet.empty
+      (SESet.singleton (PrimApp (p, args)), SESet.empty)
       (* if front_arg_len args >= p.prim_arity then ( *)
       (*   let prim_args, tl = split_arg p.prim_arity args in *)
       (*   let value, seff = PrimResolution.value_prim (p, prim_args) in *)
@@ -380,8 +411,8 @@ let rec reduce_app f args =
       (*       (SESet.union acc_value value', SESet.union acc_seff seff') *)
       (*     ) value (SESet.empty, seff) *)
       (* ) else *)
-        (SESet.singleton (PrimApp (p, args)), SESet.empty)
-    | _ -> (SESet.empty, SESet.empty)
+      (SESet.singleton (PrimApp (p, args)), SESet.empty)
+    | _ -> (SESet.empty, SESet.empty))
 
 let reduce_fld se fld =
   match se with
@@ -395,29 +426,26 @@ let reduce_fld se fld =
         | _ -> Var (Val (List.nth l i))
       in
       SESet.singleton ith
-    | _ -> SESet.empty
-  )
+    | _ -> SESet.empty)
   | _ -> SESet.empty
 
 let reduce_value se =
   match se with
-  | Unknown | Ctor _ | Fn _
-  | App (_, None :: _)
-  | Prim _ ->
+  | Unknown | Ctor _ | Fn _ | App (_, None :: _) | Prim _ ->
     (SESet.empty, SESet.empty)
   | PrimApp (prim, args) when front_arg_len args < prim.prim_arity ->
     (SESet.empty, SESet.empty)
-  | PrimApp (prim, args) ->
+  | PrimApp (prim, args) -> (
     let prim_args, tl = split_arg prim.prim_arity args in
     let value, seff = PrimResolution.value_prim (prim, prim_args) in
-    (match tl with
-    | [] -> value, seff
+    match tl with
+    | [] -> (value, seff)
     | _ ->
-      SESet.fold (fun se (acc_value, acc_seff) ->
-        let value', seff' = reduce_app se tl in
-        (SESet.union acc_value value', SESet.union acc_seff seff')
-      ) value (SESet.empty, seff)
-    )
+      SESet.fold
+        (fun se (acc_value, acc_seff) ->
+          let value', seff' = reduce_app se tl in
+          (SESet.union acc_value value', SESet.union acc_seff seff'))
+        value (SESet.empty, seff))
   | App (e, (Some _ :: _ as arg)) ->
     SESet.fold
       (fun se (acc_value, acc_seff) ->
@@ -425,13 +453,14 @@ let reduce_value se =
         (SESet.union value acc_value, SESet.union seff acc_seff))
       (lookup_sc (Var (Val e))) (SESet.empty, SESet.empty)
   | Fld (e, fld) ->
-    let value = 
-    SESet.fold
-      (fun se acc ->
-        let to_add = reduce_fld se fld in
-        SESet.union to_add acc)
-      (lookup_sc (Var (Val e))) SESet.empty
-      in (value, SESet.empty)
+    let value =
+      SESet.fold
+        (fun se acc ->
+          let to_add = reduce_fld se fld in
+          SESet.union to_add acc)
+        (lookup_sc (Var (Val e))) SESet.empty
+    in
+    (value, SESet.empty)
   | Var (Val e) ->
     let set = SESet.filter propagate (lookup_sc (Var (Val e))) in
     (set, SESet.empty)
@@ -450,35 +479,43 @@ let reduce_seff se =
     let set = SESet.filter propagate (lookup_sc (Var (SideEff e))) in
     set
   | _ ->
-      PrintSE.print_se se;
-      failwith "Invalid side effect se"
+    PrintSE.print_se se;
+    failwith "Invalid side effect se"
 
 let reduce_structured_value se =
   match se with
-  | Var (Val _) | Id _ ->
-    SESet.filter propagate (lookup_sc se)
+  | Var (Val _) | Id _ -> SESet.filter propagate (lookup_sc se)
   | Fn (arg, bodies) ->
     update_sc (Var (Val arg)) (SESet.singleton Unknown);
     bodies |> List.map (fun body -> Var (Val body)) |> SESet.of_list
   | Ctor (Record, mems) ->
-      mems |> List.fold_left (fun acc mem ->
-        let field_values = SESet.filter propagate (lookup_sc (Mem mem)) in
-        SESet.union acc field_values) SESet.empty
+    mems
+    |> List.fold_left
+         (fun acc mem ->
+           let field_values = SESet.filter propagate (lookup_sc (Mem mem)) in
+           SESet.union acc field_values)
+         SESet.empty
   | Ctor (_, labels) ->
-      labels |> List.fold_left (fun acc label ->
-        let field_values = SESet.filter propagate (lookup_sc (Var (Val label))) in
-        SESet.union acc field_values) SESet.empty
+    labels
+    |> List.fold_left
+         (fun acc label ->
+           let field_values =
+             SESet.filter propagate (lookup_sc (Var (Val label)))
+           in
+           SESet.union acc field_values)
+         SESet.empty
   | Unknown | Prim _ -> SESet.empty
   | App (e, None :: _) -> SESet.singleton (Var (Val e))
   | PrimApp (prim, args) when front_arg_len args < prim.prim_arity ->
-      SESet.empty
+    SESet.empty
   | _ ->
-      PrintSE.print_se se;
-      failwith "Invalid structured value"
+    PrintSE.print_se se;
+    failwith "Invalid structured value"
 
 let timer = Hashtbl.create 10
 let elapsed_time = Hashtbl.create 10
 let start_timer name = Hashtbl.replace timer name (Unix.gettimeofday ())
+
 let stop_timer name =
   let time = Unix.gettimeofday () -. Hashtbl.find timer name in
   match Hashtbl.find_opt elapsed_time name with
@@ -501,7 +538,7 @@ let step_sc_for_entry x =
         set SESet.empty
     in
     update_sc x reduced;
-    stop_timer "memid";
+    stop_timer "memid"
   | Var (Val e) ->
     start_timer "val";
     let value, seff =
@@ -513,7 +550,7 @@ let step_sc_for_entry x =
     in
     update_sc (Var (Val e)) value;
     update_sc (Var (SideEff e)) seff;
-    stop_timer "val";
+    stop_timer "val"
   | Var (SideEff _) ->
     start_timer "sideeff";
     let reduced =
@@ -524,14 +561,15 @@ let step_sc_for_entry x =
         set SESet.empty
     in
     update_sc x reduced;
-    stop_timer "sideeff";
+    stop_timer "sideeff"
   | Fld (e, (Record, Some i)) ->
     start_timer "fld";
-    (lookup_sc (Var (Val e))) |> SESet.iter (function
-      | Ctor (Record, l) -> (
-        try update_sc (Mem (List.nth l i)) set with _ -> ())
-      | _ -> ());
-    stop_timer "fld";
+    lookup_sc (Var (Val e))
+    |> SESet.iter (function
+         | Ctor (Record, l) -> (
+           try update_sc (Mem (List.nth l i)) set with _ -> ())
+         | _ -> ());
+    stop_timer "fld"
   | AppliedToUnknown ->
     start_timer "aou";
     let reduced =
@@ -542,7 +580,7 @@ let step_sc_for_entry x =
         set SESet.empty
     in
     update_sc x reduced;
-    stop_timer "aou";
+    stop_timer "aou"
   | _ -> failwith "Invalid LHS"
 
 let step_sc_for_pair (lhs, rhs) =
@@ -551,91 +589,92 @@ let step_sc_for_pair (lhs, rhs) =
     start_timer "memid";
     let value, _ = reduce_value rhs in
     update_sc lhs value;
-    stop_timer "memid";
+    stop_timer "memid"
   | Var (Val e) ->
     start_timer "val";
     let value, seff = reduce_value rhs in
     update_sc (Var (Val e)) value;
     update_sc (Var (SideEff e)) seff;
-    stop_timer "val";
+    stop_timer "val"
   | Var (SideEff _) ->
     start_timer "sideeff";
     let seff = reduce_seff rhs in
     update_sc lhs seff;
-    stop_timer "sideeff";
+    stop_timer "sideeff"
   | Fld (e, (Record, Some i)) ->
     start_timer "fld";
-    (lookup_sc (Var (Val e))) |> SESet.iter (function
-      | Ctor (Record, l) -> (
-        try update_sc (Mem (List.nth l i)) (SESet.singleton rhs) with _ -> ())
-      | _ -> ());
-    stop_timer "fld";
+    lookup_sc (Var (Val e))
+    |> SESet.iter (function
+         | Ctor (Record, l) -> (
+           try update_sc (Mem (List.nth l i)) (SESet.singleton rhs)
+           with _ -> ())
+         | _ -> ());
+    stop_timer "fld"
   | AppliedToUnknown ->
     start_timer "aou";
     let value = reduce_structured_value rhs in
     update_sc lhs value;
-    stop_timer "aou";
+    stop_timer "aou"
   | _ -> failwith "Invalid LHS"
 
 (* let step_sc () = *)
-  (* let to_be_reduced = *)
-  (*   SESet.fold *)
-  (*     (fun idx acc -> *)
-  (*       SESet.union *)
-  (*         (try SETbl.find reverse_sc idx with Not_found -> SESet.empty) *)
-  (*         acc) *)
-  (*     !prev_worklist SESet.empty *)
-  (* in *)
-  (* let to_be_reduced = SETbl.to_seq_keys sc |> SESet.of_seq in *)
-  (* !prev_worklist |> SEPairSet.iter (fun (key, elt) -> *)
-  (*   step_sc_for_pair (key, elt) *)
-  (* ) *)
-  (* to_be_reduced |> SESet.iter step_sc_for_entry *)
+(* let to_be_reduced = *)
+(*   SESet.fold *)
+(*     (fun idx acc -> *)
+(*       SESet.union *)
+(*         (try SETbl.find reverse_sc idx with Not_found -> SESet.empty) *)
+(*         acc) *)
+(*     !prev_worklist SESet.empty *)
+(* in *)
+(* let to_be_reduced = SETbl.to_seq_keys sc |> SESet.of_seq in *)
+(* !prev_worklist |> SEPairSet.iter (fun (key, elt) -> *)
+(*   step_sc_for_pair (key, elt) *)
+(* ) *)
+(* to_be_reduced |> SESet.iter step_sc_for_entry *)
 
 let rec step () =
   match !updated with
   | [] -> ()
-  | hd :: tl -> 
+  | hd :: tl ->
     updated := tl;
     update_worklist hd;
-    !worklist |> WorkItemSet.iter (function
-      | WorkPair (key, elt) ->
-          (* prerr_endline "@@@@@@ WorkPair @@@@@@"; *)
-          (* PrintSE.print_se key; *)
-          (* prerr_newline (); *)
-          (* PrintSE.print_se elt; *)
-          (* prerr_newline (); *)
-          step_sc_for_pair (key, elt)
-      (* | WorkPair (key, elt) -> step_sc_for_entry key *)
-      | WorkKey key ->
-          (* prerr_endline "@@@@@@ WorkKey @@@@@@"; *)
-          (* PrintSE.print_se key; *)
-          (* prerr_newline (); *)
-          step_sc_for_entry key
-    );
+    !worklist
+    |> WorkItemSet.iter (function
+         | WorkPair (key, elt) ->
+           (* prerr_endline "@@@@@@ WorkPair @@@@@@"; *)
+           (* PrintSE.print_se key; *)
+           (* prerr_newline (); *)
+           (* PrintSE.print_se elt; *)
+           (* prerr_newline (); *)
+           step_sc_for_pair (key, elt)
+         (* | WorkPair (key, elt) -> step_sc_for_entry key *)
+         | WorkKey key ->
+           (* prerr_endline "@@@@@@ WorkKey @@@@@@"; *)
+           (* PrintSE.print_se key; *)
+           (* prerr_newline (); *)
+           step_sc_for_entry key);
     Worklist.clear worklist;
     step ()
 
 let solve () =
   Format.flush_str_formatter () |> ignore;
   step ()
-  (* while !updated <> [] do *)
-  (* done *)
-  (* changed := true; *)
-  (* while !changed do *)
-  (*   print_string "step. "; *)
-  (*   Printf.printf "key: %d, values: %d" (sc |> SETbl.length) (SETbl.fold (fun _ set acc -> (set |> SESet.cardinal) + acc) sc 0); *)
-  (*   print_newline (); *)
-  (*   changed := false; *)
-  (*   (1* Worklist.prepare_step worklist prev_worklist; *1) *)
-  (*   start_timer "step"; *)
-  (*   step_sc (); *)
-  (*   stop_timer "step"; *)
-  (*   print_endline @@ "Time spent in Mem/Id: " ^ string_of_float (get_time "memid"); *)
-  (*   print_endline @@ "Time spent in Val: " ^ string_of_float (get_time "val"); *)
-  (*   print_endline @@ "Time spent in SideEff: " ^ string_of_float (get_time "sideeff"); *)
-  (*   print_endline @@ "Time spent in Fld: " ^ string_of_float (get_time "fld"); *)
-  (*   print_endline @@ "Time spent in AoU: " ^ string_of_float (get_time "aou"); *)
-  (*   print_endline @@ "Time spent in steps: " ^ string_of_float (get_time "step"); *)
-  (* done *)
-
+(* while !updated <> [] do *)
+(* done *)
+(* changed := true; *)
+(* while !changed do *)
+(*   print_string "step. "; *)
+(*   Printf.printf "key: %d, values: %d" (sc |> SETbl.length) (SETbl.fold (fun _ set acc -> (set |> SESet.cardinal) + acc) sc 0); *)
+(*   print_newline (); *)
+(*   changed := false; *)
+(*   (1* Worklist.prepare_step worklist prev_worklist; *1) *)
+(*   start_timer "step"; *)
+(*   step_sc (); *)
+(*   stop_timer "step"; *)
+(*   print_endline @@ "Time spent in Mem/Id: " ^ string_of_float (get_time "memid"); *)
+(*   print_endline @@ "Time spent in Val: " ^ string_of_float (get_time "val"); *)
+(*   print_endline @@ "Time spent in SideEff: " ^ string_of_float (get_time "sideeff"); *)
+(*   print_endline @@ "Time spent in Fld: " ^ string_of_float (get_time "fld"); *)
+(*   print_endline @@ "Time spent in AoU: " ^ string_of_float (get_time "aou"); *)
+(*   print_endline @@ "Time spent in steps: " ^ string_of_float (get_time "step"); *)
+(* done *)

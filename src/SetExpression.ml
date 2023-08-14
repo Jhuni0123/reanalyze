@@ -42,18 +42,21 @@ module IdSet = Set.Make (Id)
 
 module Label = struct
   type t = string * int
+
   type value_expr_summary = {
-    exp: expression;
+    exp : expression;
     exp_type : CL.Types.type_expr;
     exp_loc : CL.Location.t;
     exp_context : string;
   }
+
   type module_expr_summary = {
-    mod_exp: module_expr;
+    mod_exp : module_expr;
     mod_type : CL.Types.module_type;
     mod_loc : CL.Location.t;
     mod_context : string;
   }
+
   type summary =
     | ValueExpr of value_expr_summary
     | ModExpr of module_expr_summary
@@ -64,7 +67,6 @@ module Label = struct
 
   let to_summary_tbl : (t, summary) Hashtbl.t = Hashtbl.create 10
   let to_summary label = Hashtbl.find to_summary_tbl label
-
   let label_tbl = Hashtbl.create 10
 
   let new_label mod_name : t =
@@ -80,40 +82,41 @@ module Label = struct
     (mod_name, num)
 
   let new_loc label : CL.Location.t =
-    let (mod_name, num) = label in
-    let loc : Lexing.position = {
-      pos_fname = mod_name;
-      pos_lnum = num;
-      pos_bol = 0;
-      pos_cnum = -1;
-    } in
-    { loc_start = loc; loc_end = loc; loc_ghost = true }
+    let mod_name, num = label in
+    let loc : Lexing.position =
+      {pos_fname = mod_name; pos_lnum = num; pos_bol = 0; pos_cnum = -1}
+    in
+    {loc_start = loc; loc_end = loc; loc_ghost = true}
 
-  let preprocess_expression (e: expression) = 
+  let preprocess_expression (e : expression) =
     let label = new_label !Current.cmtModName in
-    Hashtbl.add to_summary_tbl label (ValueExpr {
-      exp = e;
-      exp_type = e.exp_type;
-      exp_loc = e.exp_loc;
-      exp_context = !Current.cmtModName;
-    });
+    Hashtbl.add to_summary_tbl label
+      (ValueExpr
+         {
+           exp = e;
+           exp_type = e.exp_type;
+           exp_loc = e.exp_loc;
+           exp_context = !Current.cmtModName;
+         });
     {e with exp_loc = new_loc label}
 
-  let of_expression (e: expression) =
+  let of_expression (e : expression) =
     let pos = e.exp_loc.loc_start in
     (pos.pos_fname, pos.pos_lnum)
 
-  let preprocess_module_expr (me: module_expr) = 
+  let preprocess_module_expr (me : module_expr) =
     let label = new_label !Current.cmtModName in
-    Hashtbl.add to_summary_tbl label (ModExpr {
-      mod_exp = me;
-      mod_type = me.mod_type;
-      mod_loc = me.mod_loc;
-      mod_context = !Current.cmtModName;
-    });
+    Hashtbl.add to_summary_tbl label
+      (ModExpr
+         {
+           mod_exp = me;
+           mod_type = me.mod_type;
+           mod_loc = me.mod_loc;
+           mod_context = !Current.cmtModName;
+         });
     {me with mod_loc = new_loc label}
 
-  let of_module_expr (me: module_expr) =
+  let of_module_expr (me : module_expr) =
     let pos = me.mod_loc.loc_start in
     (pos.pos_fname, pos.pos_lnum)
 
@@ -138,10 +141,8 @@ module Label = struct
     label
 end
 
-
 type var = Val of Label.t | SideEff of Label.t
 type arg = Label.t option list
-
 type memory_label = string * int
 
 type ctor =
@@ -159,12 +160,7 @@ module CtorMap = Map.Make (struct
 end)
 
 type fld = ctor * int option
-
-type case = {
-  pat: pattern;
-  guard: var option;
-  expr: var;
-}
+type case = {pat : pattern; guard : var option; expr : var}
 
 type se =
   | Top
@@ -185,52 +181,44 @@ type se =
   | AppliedToUnknown
 
 let compare_se a b =
-  match a, b with
-  | Id x, Id y -> Id.compare x y
-  | _ -> compare a b
+  match (a, b) with Id x, Id y -> Id.compare x y | _ -> compare a b
 
-module SESet = Set.Make(struct
+module SESet = Set.Make (struct
   type t = se
+
   let compare = compare_se
 end)
 
 let compare_se_pair (a1, a2) (b1, b2) =
-  match compare_se a1 b1 with
-  | 0 -> compare_se a2 b2
-  | c -> c
+  match compare_se a1 b1 with 0 -> compare_se a2 b2 | c -> c
 
-module SEPairSet = Set.Make(struct
+module SEPairSet = Set.Make (struct
   type t = se * se
+
   let compare = compare_se_pair
 end)
 
-module SETbl = Hashtbl.Make(struct
+module SETbl = Hashtbl.Make (struct
   type t = se
-  let compare = compare_se
-  let equal a b =
-    match a, b with
-    | Id x, Id y -> Id.equal x y
-    | _ -> a = b
 
-  let hash = function
-    | Id x -> Id.hash x
-    | x -> Hashtbl.hash x
+  let compare = compare_se
+  let equal a b = match (a, b) with Id x, Id y -> Id.equal x y | _ -> a = b
+  let hash = function Id x -> Id.hash x | x -> Hashtbl.hash x
 end)
 
-type workitem =
-  | WorkPair of se * se
-  | WorkKey of se
+type workitem = WorkPair of se * se | WorkKey of se
 
 module WorkItemSet = Set.Make (struct
   type t = workitem
+
   let compare a b =
-    match a, b with
+    match (a, b) with
     | WorkKey x, WorkKey y -> compare_se x y
     | WorkPair (x1, x2), WorkPair (y1, y2) -> compare_se_pair (x1, x2) (y1, y2)
     | _ -> compare a b
 end)
-module Worklist = struct
 
+module Worklist = struct
   type t = WorkItemSet.t ref
 
   let add x (worklist : t) = worklist := WorkItemSet.add x !worklist
@@ -259,15 +247,16 @@ let new_memory mod_name : memory_label =
   in
   (mod_name, label)
 
-
 let updated : (se * se) list ref = ref []
 let worklist : Worklist.t = Worklist.create ()
+
 (* let prev_worklist : Worklist.t = ref SEPairSet.empty *)
 let sc : SESet.t SETbl.t = SETbl.create 256
 let reverse_sc : WorkItemSet.t SETbl.t = SETbl.create 256
 let changed = ref false
 
-let lookup_sc se = try SETbl.find sc se with Not_found -> SESet.singleton Unknown
+let lookup_sc se =
+  try SETbl.find sc se with Not_found -> SESet.singleton Unknown
 
 (* exception Escape *)
 (* let update_worklist key set = *)
@@ -307,11 +296,8 @@ let rec front_arg_len = function
   | Some _ :: tl -> front_arg_len tl + 1
 
 let propagate = function
-  | Unknown | Ctor _ | Prim _ | Fn _
-  | App (_, None :: _) ->
-    true
-  | PrimApp (prim, args) ->
-      front_arg_len args < prim.prim_arity
+  | Unknown | Ctor _ | Prim _ | Fn _ | App (_, None :: _) -> true
+  | PrimApp (prim, args) -> front_arg_len args < prim.prim_arity
   | SideEffect -> true
   | _ -> false
 
@@ -323,23 +309,19 @@ let add_reverse se workitem =
 let update_worklist (key, elt) =
   Worklist.add (WorkPair (key, elt)) worklist;
   match key with
-  | Mem _ | Id _ | Var _ ->
-      add_reverse elt (WorkPair (key, elt));
-      if propagate elt then (
-        match SETbl.find_opt reverse_sc key with
-        | Some rev -> Worklist.addset rev worklist
-        | None -> ()
-      );
-      (match key, elt with
-      | Var _, Fld (e, _)
-      | Var _, App (e, (Some _ :: _)) -> add_reverse (Var (Val e)) (WorkPair (key, elt))
-      | _ -> ()
-      )
-  | Fld (e, _) ->
-      add_reverse (Var (Val e)) (WorkPair (key, elt));
-  | AppliedToUnknown ->
-      add_reverse elt (WorkPair (key, elt));
-  | _ -> failwith "IInvalid LHSnvalid LHS"
+  | Mem _ | Id _ | Var _ -> (
+    add_reverse elt (WorkPair (key, elt));
+    (if propagate elt then
+     match SETbl.find_opt reverse_sc key with
+     | Some rev -> Worklist.addset rev worklist
+     | None -> ());
+    match (key, elt) with
+    | Var _, Fld (e, _) | Var _, App (e, Some _ :: _) ->
+      add_reverse (Var (Val e)) (WorkPair (key, elt))
+    | _ -> ())
+  | Fld (e, _) -> add_reverse (Var (Val e)) (WorkPair (key, elt))
+  | AppliedToUnknown -> add_reverse elt (WorkPair (key, elt))
+  | _ -> failwith "Invalid LHS"
 
 (* enforce data to be nonempty *)
 let init_sc lhs data =
@@ -359,4 +341,3 @@ let update_sc lhs added =
     (* diff |> SESet.iter (update_worklist lhs); *)
     (* update_worklist lhs diff; *)
     SETbl.replace sc lhs (SESet.union original diff))
-
