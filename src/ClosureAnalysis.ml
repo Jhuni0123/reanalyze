@@ -172,10 +172,7 @@ let se_of_expr expr =
            []
     in
     let v = [App (Label.of_expression e, arg_labels)] in
-    let seff =
-      (*  AppSEff (Label.of_expression e, arg_labels ) :: *)
-      Var (SideEff (Label.of_expression e)) :: seff
-    in
+    let seff = Var (SideEff (Label.of_expression e)) :: seff in
     (v, seff)
   | Texp_match (exp, cases, exn_cases, _) ->
     let pats = cases |> List.map (fun case -> case.c_lhs) in
@@ -358,7 +355,7 @@ let rec merge_args = function
   | None :: tl, hd :: l -> hd :: merge_args (tl, l)
   | Some x :: tl, l -> Some x :: merge_args (tl, l)
 
-let rec reduce_app f args =
+let reduce_app f args =
   match args with
   | [] | None :: _ -> (SESet.empty, SESet.empty)
   | Some hd :: tl -> (
@@ -385,32 +382,10 @@ let rec reduce_app f args =
       (value, seff)
     | Prim p ->
       (SESet.singleton (PrimApp (p, args)), SESet.empty)
-      (* if front_arg_len args >= p.prim_arity then ( *)
-      (*   let prim_args, tl = split_arg p.prim_arity args in *)
-      (*   let value, seff = PrimResolution.value_prim (p, prim_args) in *)
-      (*   match tl with *)
-      (*   | [] -> (value, seff) *)
-      (*   | _ -> *)
-      (*       SESet.fold (fun se (acc_value, acc_seff) -> *)
-      (*         let value', seff' = reduce_app se tl in *)
-      (*         (SESet.union acc_value value', SESet.union acc_seff seff') *)
-      (*       ) value (SESet.empty, seff) *)
-      (* ) else (SESet.singleton (PrimApp (p, args)), SESet.empty) *)
     | App (e, None :: tl') ->
       (SESet.singleton (App (e, Some hd :: merge_args (tl', tl))), SESet.empty)
     | PrimApp (p, args') when front_arg_len args' < p.prim_arity ->
       let args = merge_args (args', args) in
-      (* if front_arg_len args >= p.prim_arity then ( *)
-      (*   let prim_args, tl = split_arg p.prim_arity args in *)
-      (*   let value, seff = PrimResolution.value_prim (p, prim_args) in *)
-      (*   match tl with *)
-      (*   | [] -> value, seff *)
-      (*   | _ -> *)
-      (*     SESet.fold (fun se (acc_value, acc_seff) -> *)
-      (*       let value', seff' = reduce_app se tl in *)
-      (*       (SESet.union acc_value value', SESet.union acc_seff seff') *)
-      (*     ) value (SESet.empty, seff) *)
-      (* ) else *)
       (SESet.singleton (PrimApp (p, args)), SESet.empty)
     | _ -> (SESet.empty, SESet.empty))
 
@@ -512,24 +487,10 @@ let reduce_structured_value se =
     PrintSE.print_se se;
     failwith "Invalid structured value"
 
-let timer = Hashtbl.create 10
-let elapsed_time = Hashtbl.create 10
-let start_timer name = Hashtbl.replace timer name (Unix.gettimeofday ())
-
-let stop_timer name =
-  let time = Unix.gettimeofday () -. Hashtbl.find timer name in
-  match Hashtbl.find_opt elapsed_time name with
-  | None -> Hashtbl.add elapsed_time name time
-  | Some t -> Hashtbl.replace elapsed_time name (time +. t)
-
-let get_time name =
-  Hashtbl.find_opt elapsed_time name |> Option.value ~default:0.0
-
 let step_sc_for_entry x =
   let set = lookup_sc x in
   match x with
   | Mem _ | Id _ ->
-    start_timer "memid";
     let reduced =
       SESet.fold
         (fun se acc ->
@@ -537,10 +498,8 @@ let step_sc_for_entry x =
           SESet.union value acc)
         set SESet.empty
     in
-    update_sc x reduced;
-    stop_timer "memid"
+    update_sc x reduced
   | Var (Val e) ->
-    start_timer "val";
     let value, seff =
       SESet.fold
         (fun se (acc_value, acc_seff) ->
@@ -549,10 +508,8 @@ let step_sc_for_entry x =
         set (SESet.empty, SESet.empty)
     in
     update_sc (Var (Val e)) value;
-    update_sc (Var (SideEff e)) seff;
-    stop_timer "val"
+    update_sc (Var (SideEff e)) seff
   | Var (SideEff _) ->
-    start_timer "sideeff";
     let reduced =
       SESet.fold
         (fun se acc ->
@@ -560,18 +517,14 @@ let step_sc_for_entry x =
           SESet.union seff acc)
         set SESet.empty
     in
-    update_sc x reduced;
-    stop_timer "sideeff"
+    update_sc x reduced
   | Fld (e, (Record, Some i)) ->
-    start_timer "fld";
     lookup_sc (Var (Val e))
     |> SESet.iter (function
          | Ctor (Record, l) -> (
            try update_sc (Mem (List.nth l i)) set with _ -> ())
-         | _ -> ());
-    stop_timer "fld"
+         | _ -> ())
   | AppliedToUnknown ->
-    start_timer "aou";
     let reduced =
       SESet.fold
         (fun se acc ->
@@ -579,102 +532,39 @@ let step_sc_for_entry x =
           SESet.union value acc)
         set SESet.empty
     in
-    update_sc x reduced;
-    stop_timer "aou"
+    update_sc x reduced
   | _ -> failwith "Invalid LHS"
 
 let step_sc_for_pair (lhs, rhs) =
   match lhs with
   | Mem _ | Id _ ->
-    start_timer "memid";
     let value, _ = reduce_value rhs in
-    update_sc lhs value;
-    stop_timer "memid"
+    update_sc lhs value
   | Var (Val e) ->
-    start_timer "val";
     let value, seff = reduce_value rhs in
     update_sc (Var (Val e)) value;
-    update_sc (Var (SideEff e)) seff;
-    stop_timer "val"
+    update_sc (Var (SideEff e)) seff
   | Var (SideEff _) ->
-    start_timer "sideeff";
     let seff = reduce_seff rhs in
-    update_sc lhs seff;
-    stop_timer "sideeff"
+    update_sc lhs seff
   | Fld (e, (Record, Some i)) ->
-    start_timer "fld";
     lookup_sc (Var (Val e))
     |> SESet.iter (function
          | Ctor (Record, l) -> (
            try update_sc (Mem (List.nth l i)) (SESet.singleton rhs)
            with _ -> ())
-         | _ -> ());
-    stop_timer "fld"
+         | _ -> ())
   | AppliedToUnknown ->
-    start_timer "aou";
     let value = reduce_structured_value rhs in
-    update_sc lhs value;
-    stop_timer "aou"
+    update_sc lhs value
   | _ -> failwith "Invalid LHS"
 
-(* let step_sc () = *)
-(* let to_be_reduced = *)
-(*   SESet.fold *)
-(*     (fun idx acc -> *)
-(*       SESet.union *)
-(*         (try SETbl.find reverse_sc idx with Not_found -> SESet.empty) *)
-(*         acc) *)
-(*     !prev_worklist SESet.empty *)
-(* in *)
-(* let to_be_reduced = SETbl.to_seq_keys sc |> SESet.of_seq in *)
-(* !prev_worklist |> SEPairSet.iter (fun (key, elt) -> *)
-(*   step_sc_for_pair (key, elt) *)
-(* ) *)
-(* to_be_reduced |> SESet.iter step_sc_for_entry *)
-
-let rec step () =
-  match !updated with
-  | [] -> ()
-  | hd :: tl ->
-    updated := tl;
-    update_worklist hd;
-    !worklist
-    |> WorkItemSet.iter (function
-         | WorkPair (key, elt) ->
-           (* prerr_endline "@@@@@@ WorkPair @@@@@@"; *)
-           (* PrintSE.print_se key; *)
-           (* prerr_newline (); *)
-           (* PrintSE.print_se elt; *)
-           (* prerr_newline (); *)
-           step_sc_for_pair (key, elt)
-         (* | WorkPair (key, elt) -> step_sc_for_entry key *)
-         | WorkKey key ->
-           (* prerr_endline "@@@@@@ WorkKey @@@@@@"; *)
-           (* PrintSE.print_se key; *)
-           (* prerr_newline (); *)
-           step_sc_for_entry key);
-    Worklist.clear worklist;
-    step ()
-
 let solve () =
-  Format.flush_str_formatter () |> ignore;
-  step ()
-(* while !updated <> [] do *)
-(* done *)
-(* changed := true; *)
-(* while !changed do *)
-(*   print_string "step. "; *)
-(*   Printf.printf "key: %d, values: %d" (sc |> SETbl.length) (SETbl.fold (fun _ set acc -> (set |> SESet.cardinal) + acc) sc 0); *)
-(*   print_newline (); *)
-(*   changed := false; *)
-(*   (1* Worklist.prepare_step worklist prev_worklist; *1) *)
-(*   start_timer "step"; *)
-(*   step_sc (); *)
-(*   stop_timer "step"; *)
-(*   print_endline @@ "Time spent in Mem/Id: " ^ string_of_float (get_time "memid"); *)
-(*   print_endline @@ "Time spent in Val: " ^ string_of_float (get_time "val"); *)
-(*   print_endline @@ "Time spent in SideEff: " ^ string_of_float (get_time "sideeff"); *)
-(*   print_endline @@ "Time spent in Fld: " ^ string_of_float (get_time "fld"); *)
-(*   print_endline @@ "Time spent in AoU: " ^ string_of_float (get_time "aou"); *)
-(*   print_endline @@ "Time spent in steps: " ^ string_of_float (get_time "step"); *)
-(* done *)
+  while not (worklist |> Worklist.is_empty) do
+    let pair = worklist |> Worklist.pop in
+    update_reverse pair;
+    get_workitems pair
+    |> WorkItemSet.iter (function
+         | WorkPair (key, elt) -> step_sc_for_pair (key, elt)
+         | WorkKey key -> step_sc_for_entry key)
+  done

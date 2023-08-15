@@ -172,15 +172,15 @@ module ValueDependencyAnalysis = struct
   let analyze_prim_dep : CL.Primitive.description * Label.t list -> unit =
     function
     | {prim_name = "%ignore"}, [_] -> ()
-    | prim, args ->
+    | _prim, args ->
       args |> List.iter (fun arg -> addEdge Top (Var (Val arg)) Func.top)
 
   let collectExpr e =
     match e.exp_desc with
-    | Texp_ident (path, lid, vd) -> collectPath (expr e) path Func.id
+    | Texp_ident (path, _, _) -> collectPath (expr e) path Func.id
     | Texp_constant _ -> ()
-    | Texp_let (_, vbs, e_body) -> addEdge (expr e) (expr e_body) Func.id
-    | Texp_function {arg_label; param; cases; partial} ->
+    | Texp_let (_, _, e_body) -> addEdge (expr e) (expr e_body) Func.id
+    | Texp_function {cases} ->
       lookup_sc (expr e)
       |> SESet.iter (function
            | Fn (param, bodies) ->
@@ -207,34 +207,12 @@ module ValueDependencyAnalysis = struct
     | Texp_apply (e_f, args) ->
       lookup_sc (expr e)
       |> SESet.iter (function
-           (* | App (f, Some arg :: tl) -> *)
-           (*     (1* joinLive (Var (Val f)) Live.Top; *1) *)
-           (*     (1* addEdge (expr e) (Var (Val f)) (Func.ifnotbot Live.Top); *1) *)
-           (*     (1* addEdge (expr e) (Var (Val f)) Func.func; *1) *)
-           (*     if lookup_sc (Var (Val f)) |> SESet.mem Unknown then ( *)
-           (*       addEdge Top (Var (Val f)) Func.top; *)
-           (*       addEdge Top (Var (Val arg)) Func.top; *)
-           (*     ); *)
-           (*     (match tl with *)
-           (*     | [] -> *)
-           (*       lookup_sc (Var (Val f)) |> SESet.iter (function *)
-           (*         | Fn (arg, bodies) -> *)
-           (*             bodies |> List.iter (fun body -> *)
-           (*               addEdge (expr e) (Var (Val body)) Func.id; *)
-           (*               if body |> hasSideEffect then *)
-           (*                 addEdge Top (Var (Val f)) Func.top *)
-           (*             ) *)
-           (*         | _ -> () *)
-           (*       ) *)
-           (*     | _ -> ()) *)
-           (* | App (f, args) -> *)
-           (*     () *)
            | PrimApp (prim, Some arg :: tl)
              when front_arg_len tl + 1 >= prim.prim_arity ->
-             let prim_args, tl' =
+             let prim_args, _tl' =
                Some arg :: tl |> ClosureAnalysis.split_arg prim.prim_arity
              in
-             let v, seff = PrimResolution.value_prim (prim, prim_args) in
+             let _, seff = PrimResolution.value_prim (prim, prim_args) in
              if seff |> SESet.mem SideEffect then
                addEdge Top (expr e_f) Func.top;
              analyze_prim_dep (prim, prim_args)
@@ -257,32 +235,6 @@ module ValueDependencyAnalysis = struct
         l''
       in
       addEdge (expr e) (expr e_f) fn
-      (* (ValueAnalysis.get (Value.expr e)).closure.reductions *)
-      (* |> ReductionSet.elements *)
-      (* |> List.iter (fun app -> *)
-      (*        let (Reduce (eid, arg, tl)) = app in *)
-      (*        match (ValueAnalysis.get (V_Expr eid)).closure.values with *)
-      (*        | VS_Top -> () *)
-      (*        | VS_Set s -> *)
-      (*          s *)
-      (*          |> VESet.ElemSet.iter (fun v -> *)
-      (*                 match v with *)
-      (*                 | VE_Prim prim -> *)
-      (*                   if *)
-      (*                     tl |> List.for_all Option.is_some *)
-      (*                     && (tl |> List.length) + 1 = prim.prim_arity *)
-      (*                   then collectPrimApp prim e app *)
-      (*                 | VE_Fn (eid, param) -> *)
-      (*                   let bodies = bodyOfFunction eid in *)
-      (*                   addEdge (Value.expr e) (V_Expr eid) *)
-      (*                     (Func.ifnotbot Live.Top); *)
-      (*                   bodies *)
-      (*                   |> List.iter (fun body -> *)
-      (*                          addEdge (Value.expr e) (V_Expr body.exp_id) *)
-      (*                            Func.id; *)
-      (*                          collectBind body.cmtModName body.pat *)
-      (*                            (Expr.fromId arg) Func.id) *)
-      (*                 | _ -> ())) *)
     | Texp_match (exp, cases, exn_cases, _) ->
       cases @ exn_cases
       |> List.iter (fun case ->
@@ -474,9 +426,9 @@ module ValueDependencyAnalysis = struct
     | Tpat_lazy p -> acc |> recurse p
     | Tpat_or (lhs, rhs, _) -> acc |> recurse rhs |> recurse lhs
 
-  let rec iter_id_in_pat f pat = pattern_fold_id_right (fun p () -> f p) pat ()
+  let iter_id_in_pat f pat = pattern_fold_id_right (fun p () -> f p) pat ()
 
-  let rec bindings_of_pat (pat : pattern) =
+  let bindings_of_pat (pat : pattern) =
     pattern_fold_id_right List.cons pat []
   (* match pat.pat_desc with *)
   (* | Tpat_any | Tpat_constant _ -> [] *)
@@ -535,7 +487,7 @@ module ValueDependencyAnalysis = struct
     | Tmod_functor (x, _, _, _) ->
       lookup_sc (module_expr me)
       |> SESet.iter (function
-           | Fn (param, bodies) ->
+           | Fn (param, _) ->
              addEdge
                (Id (Id.create !Current.cmtModName x))
                (Var (Val param)) Func.id;
@@ -545,16 +497,16 @@ module ValueDependencyAnalysis = struct
                     addEdge (Var (Val param)) (Var (Val arg)) Func.id
                   | _ -> ())
            | _ -> ())
-    | Tmod_apply (me_f, me_arg, _) ->
+    | Tmod_apply (me_f, _, _) ->
       lookup_sc (module_expr me)
       |> SESet.iter (function
-           | App (f, Some arg :: tl) -> (
+           | App (f, Some _ :: tl) -> (
              addEdge (module_expr me) (Var (Val f)) (Func.ifnotbot Live.Top);
              match tl with
              | [] ->
                lookup_sc (Var (Val f))
                |> SESet.iter (function
-                    | Fn (arg, bodies) ->
+                    | Fn (_, bodies) ->
                       bodies
                       |> List.iter (fun body ->
                              addEdge (module_expr me) (Var (Val body)) Func.id)
@@ -712,14 +664,12 @@ let preprocess =
   {super with expr; module_expr}
 
 let cmtStructures : cmt_structure list ref = ref []
-let num_expr = ref 0
-let num_modexpr = ref 0
 
 let processCmtStructure modname (structure : CL.Typedtree.structure) =
-  (* print_endline "processCmtStructure"; *)
-  (* print_endline modname; *)
-  (* Print.print_structure structure; *)
-  (* print_newline (); *)
+  print_endline "processCmtStructure";
+  print_endline modname;
+  Print.print_structure structure;
+  print_newline ();
   let structure = structure |> preprocess.structure preprocess in
   structure |> traverse_ast.structure traverse_ast |> ignore;
   let label = Label.new_cmt_module modname in
@@ -817,7 +767,7 @@ let reportDead ~ppf =
   solve ();
   !cmtStructures |> List.iter ValueDependencyAnalysis.collect;
   ValueDependencyAnalysis.solve ();
-  (* PrintSE.print_sc_info (); *)
+  PrintSE.print_sc_info ();
   prerr_endline "============ Dead Values =============";
   let deads = collectDeadValues !cmtStructures in
   deads

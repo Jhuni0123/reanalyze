@@ -218,21 +218,6 @@ module WorkItemSet = Set.Make (struct
     | _ -> compare a b
 end)
 
-module Worklist = struct
-  type t = WorkItemSet.t ref
-
-  let add x (worklist : t) = worklist := WorkItemSet.add x !worklist
-  let addset s (worklist : t) = worklist := WorkItemSet.union s !worklist
-  (* let mem x (worklist : t) = SESet.mem x !worklist *)
-
-  let prepare_step (worklist : t) (prev_worklist : t) =
-    prev_worklist := !worklist;
-    worklist := WorkItemSet.empty
-
-  let create () = ref WorkItemSet.empty
-  let clear worklist = worklist := WorkItemSet.empty
-end
-
 let address_tbl : (string, int) Hashtbl.t = Hashtbl.create 10
 
 let new_memory mod_name : memory_label =
@@ -247,48 +232,23 @@ let new_memory mod_name : memory_label =
   in
   (mod_name, label)
 
-let updated : (se * se) list ref = ref []
+module Worklist = struct
+  type t = (se * se) Stack.t
+
+  let push = Stack.push
+  let pop = Stack.pop
+  let is_empty = Stack.is_empty
+  let create = Stack.create
+end
+
 let worklist : Worklist.t = Worklist.create ()
 
 (* let prev_worklist : Worklist.t = ref SEPairSet.empty *)
 let sc : SESet.t SETbl.t = SETbl.create 256
 let reverse_sc : WorkItemSet.t SETbl.t = SETbl.create 256
-let changed = ref false
 
 let lookup_sc se =
   try SETbl.find sc se with Not_found -> SESet.singleton Unknown
-
-(* exception Escape *)
-(* let update_worklist key set = *)
-(*   let summarize elt = *)
-(*     let idx = *)
-(*       match elt with *)
-(*       | App (e, (Some _ :: _ | [])) *)
-(*       | Fld (e, _) -> *)
-(*         Worklist.add (Var (Val e)) worklist; *)
-(*         Var (Val e) *)
-(*       | Var _ | Mem _ | Id _ -> *)
-(*         Worklist.add elt worklist; *)
-(*         elt *)
-(*       | _ -> Worklist.add elt worklist; elt *)
-(*       (1* | _ -> raise Escape *1) *)
-(*     in *)
-(*     match SETbl.find_opt reverse_sc idx with *)
-(*     | None -> SETbl.add reverse_sc idx (SESet.singleton key) *)
-(*     | Some orig -> SETbl.replace reverse_sc idx (SESet.add key orig) *)
-(*   in *)
-(*   match key with *)
-(*   | Mem _ | Id _ -> *)
-(*     Worklist.add key worklist; *)
-(*     SESet.iter (fun se -> try summarize se with Escape -> ()) set *)
-(*   | Var _ -> *)
-(*     Worklist.add key worklist; *)
-(*     SESet.iter (fun se -> try summarize se with Escape -> ()) set *)
-(*   | Fld (e, _) -> summarize (Var (Val e)) *)
-(*   | AppliedToUnknown -> *)
-(*     Worklist.add key worklist; *)
-(*     SESet.iter (fun se -> try summarize se with Escape -> ()) set *)
-(*   | _ -> failwith "Invalid LHS" *)
 
 let rec front_arg_len = function
   | [] -> 0
@@ -306,15 +266,10 @@ let add_reverse se workitem =
   | None -> SETbl.add reverse_sc se (WorkItemSet.singleton workitem)
   | Some orig -> SETbl.replace reverse_sc se (WorkItemSet.add workitem orig)
 
-let update_worklist (key, elt) =
-  Worklist.add (WorkPair (key, elt)) worklist;
+let update_reverse (key, elt) =
   match key with
   | Mem _ | Id _ | Var _ -> (
     add_reverse elt (WorkPair (key, elt));
-    (if propagate elt then
-     match SETbl.find_opt reverse_sc key with
-     | Some rev -> Worklist.addset rev worklist
-     | None -> ());
     match (key, elt) with
     | Var _, Fld (e, _) | Var _, App (e, Some _ :: _) ->
       add_reverse (Var (Val e)) (WorkPair (key, elt))
@@ -323,11 +278,18 @@ let update_worklist (key, elt) =
   | AppliedToUnknown -> add_reverse elt (WorkPair (key, elt))
   | _ -> failwith "Invalid LHS"
 
-(* enforce data to be nonempty *)
+let get_workitems (key, elt) =
+  let items = WorkItemSet.singleton (WorkPair (key, elt)) in
+  match key with
+  | Mem _ | Id _ | Var _ when propagate elt -> (
+    match SETbl.find_opt reverse_sc key with
+    | Some rev -> WorkItemSet.union rev items
+    | None -> items)
+  | _ -> items
+
 let init_sc lhs data =
-  data |> List.iter (fun rhs -> updated := (lhs, rhs) :: !updated);
+  data |> List.iter (fun rhs -> worklist |> Worklist.push (lhs, rhs));
   let set = SESet.of_list data in
-  (* update_worklist lhs set; *)
   match SETbl.find sc lhs with
   | exception Not_found -> SETbl.add sc lhs set
   | original -> SETbl.replace sc lhs (SESet.union original set)
@@ -336,8 +298,5 @@ let update_sc lhs added =
   let original = lookup_sc lhs in
   let diff = SESet.diff added original in
   if not (SESet.is_empty diff) then (
-    changed := true;
-    diff |> SESet.iter (fun rhs -> updated := (lhs, rhs) :: !updated);
-    (* diff |> SESet.iter (update_worklist lhs); *)
-    (* update_worklist lhs diff; *)
+    diff |> SESet.iter (fun rhs -> worklist |> Worklist.push (lhs, rhs));
     SETbl.replace sc lhs (SESet.union original diff))

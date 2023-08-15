@@ -139,5 +139,3 @@ let rec controlledByPat (pat : pattern) =
 let liveness : (se, t) Hashtbl.t = Hashtbl.create 10
 let get se =
   Hashtbl.find_opt liveness se |> Option.value ~default:Bot
-let hasSideEffect label =
-  lookup_sc (Var (SideEff label)) |> SESet.mem SideEffect
