@@ -65,6 +65,7 @@ let print_arg = function
   | Some a -> print_summary a
 
 let rec print_se : se -> unit = function
+  | Top -> prerr_string "⊤"
   | Unknown -> prerr_string "Unknown"
   | Fn (p, list) ->
     prerr_string "λ";
@@ -79,6 +80,12 @@ let rec print_se : se -> unit = function
   | PrimApp ({prim_name}, list) ->
     prerr_string "PrimApp (";
     prerr_string prim_name;
+    prerr_string ", ";
+    print_list print_arg ";" list;
+    prerr_string ")"
+  | FnApp (param, bodies, list) ->
+    prerr_string "FnApp (";
+    print_se (Fn (param, bodies));
     prerr_string ", ";
     print_list print_arg ";" list;
     prerr_string ")"
@@ -202,7 +209,7 @@ let show_sc_tbl (tbl : SESet.t SETbl.t) =
     tbl
 
 let filter_closure = function
-  | Fn (_, _) | App (_, None :: _) | PrimApp _ | Prim _ -> true
+  | Fn (_, _) | FnApp (_, _, _) | App (_, None :: _) | PrimApp _ | Prim _ -> true
   | _ -> false
 
 let show_closure_analysis tbl =

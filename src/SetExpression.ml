@@ -173,6 +173,7 @@ type se =
   | Prim of CL.Primitive.description
   | Fn of Label.t * Label.t list
   | App of Label.t * arg
+  | FnApp of Label.t * Label.t list * arg
   | PrimApp of CL.Primitive.description * arg
   | Ctor of ctor * Label.t list
   | Fld of Label.t * fld
@@ -256,7 +257,7 @@ let rec front_arg_len = function
   | Some _ :: tl -> front_arg_len tl + 1
 
 let propagate = function
-  | Unknown | Ctor _ | Prim _ | Fn _ | App (_, None :: _) -> true
+  | Unknown | Ctor _ | Prim _ | Fn _ | FnApp (_, _, None :: _) -> true
   | PrimApp (prim, args) -> front_arg_len args < prim.prim_arity
   | SideEffect -> true
   | _ -> false

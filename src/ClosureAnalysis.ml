@@ -356,38 +356,25 @@ let rec merge_args = function
   | Some x :: tl, l -> Some x :: merge_args (tl, l)
 
 let reduce_app f args =
-  match args with
-  | [] | None :: _ -> (SESet.empty, SESet.empty)
-  | Some hd :: tl -> (
-    match f with
-    | Unknown ->
-      args
-      |> List.iter (fun arg ->
-             match arg with
-             | None -> ()
-             | Some label ->
-               update_sc AppliedToUnknown (SESet.singleton (Var (Val label))));
-      (SESet.singleton Unknown, SESet.singleton SideEffect)
-    | Fn (param, bodies) ->
-      let value =
-        bodies
-        |> List.map (fun body ->
-               if tl = [] then Var (Val body) else App (body, tl))
-        |> SESet.of_list
-      in
-      let seff =
-        bodies |> List.map (fun body -> Var (SideEff body)) |> SESet.of_list
-      in
-      update_sc (Var (Val param)) (SESet.singleton (Var (Val hd)));
-      (value, seff)
-    | Prim p ->
-      (SESet.singleton (PrimApp (p, args)), SESet.empty)
-    | App (e, None :: tl') ->
-      (SESet.singleton (App (e, Some hd :: merge_args (tl', tl))), SESet.empty)
-    | PrimApp (p, args') when front_arg_len args' < p.prim_arity ->
-      let args = merge_args (args', args) in
-      (SESet.singleton (PrimApp (p, args)), SESet.empty)
-    | _ -> (SESet.empty, SESet.empty))
+  match f with
+  | Unknown ->
+    args
+    |> List.iter (fun arg ->
+           match arg with
+           | None -> ()
+           | Some label ->
+             update_sc AppliedToUnknown (SESet.singleton (Var (Val label))));
+    (SESet.singleton Unknown, SESet.singleton SideEffect)
+  | Fn (param, bodies) ->
+    (SESet.singleton (FnApp (param, bodies, args)), SESet.empty)
+  | Prim p ->
+    (SESet.singleton (PrimApp (p, args)), SESet.empty)
+  | FnApp (param, bodies, (None :: _ as args')) ->
+    (SESet.singleton (FnApp (param, bodies, merge_args (args', args))), SESet.empty)
+  | PrimApp (p, args') when front_arg_len args' < p.prim_arity ->
+    let args = merge_args (args', args) in
+    (SESet.singleton (PrimApp (p, args)), SESet.empty)
+  | _ -> (SESet.empty, SESet.empty)
 
 let reduce_fld se fld =
   match se with
@@ -406,7 +393,7 @@ let reduce_fld se fld =
 
 let reduce_value se =
   match se with
-  | Unknown | Ctor _ | Fn _ | App (_, None :: _) | Prim _ ->
+  | Unknown | Ctor _ | Fn _ | FnApp (_, _, None :: _) | Prim _ ->
     (SESet.empty, SESet.empty)
   | PrimApp (prim, args) when front_arg_len args < prim.prim_arity ->
     (SESet.empty, SESet.empty)
@@ -421,7 +408,19 @@ let reduce_value se =
           let value', seff' = reduce_app se tl in
           (SESet.union acc_value value', SESet.union acc_seff seff'))
         value (SESet.empty, seff))
-  | App (e, (Some _ :: _ as arg)) ->
+  | FnApp (param, bodies, Some hd :: tl) ->
+    let value =
+      bodies
+      |> List.map (fun body ->
+             if tl = [] then Var (Val body) else App (body, tl))
+      |> SESet.of_list
+    in
+    let seff =
+      bodies |> List.map (fun body -> Var (SideEff body)) |> SESet.of_list
+    in
+    update_sc (Var (Val param)) (SESet.singleton (Var (Val hd)));
+    (value, seff)
+  | App (e, arg) ->
     SESet.fold
       (fun se (acc_value, acc_seff) ->
         let value, seff = reduce_app se arg in
@@ -457,12 +456,11 @@ let reduce_seff se =
     PrintSE.print_se se;
     failwith "Invalid side effect se"
 
-let reduce_structured_value se =
+let reduce_argument_of_unknown se =
   match se with
   | Var (Val _) | Id _ -> SESet.filter propagate (lookup_sc se)
   | Fn (arg, bodies) ->
-    update_sc (Var (Val arg)) (SESet.singleton Unknown);
-    bodies |> List.map (fun body -> Var (Val body)) |> SESet.of_list
+    SESet.singleton (FnApp (arg, bodies, None :: []))
   | Ctor (Record, mems) ->
     mems
     |> List.fold_left
@@ -479,10 +477,19 @@ let reduce_structured_value se =
            in
            SESet.union acc field_values)
          SESet.empty
-  | Unknown | Prim _ -> SESet.empty
-  | App (e, None :: _) -> SESet.singleton (Var (Val e))
+  | FnApp (param, bodies, None :: tl) ->
+    update_sc (Var (Val param)) (SESet.singleton Unknown);
+    bodies
+      |> List.map (fun body -> if tl = [] then Var (Val body) else App (body, tl))
+      |> SESet.of_list
   | PrimApp (prim, args) when front_arg_len args < prim.prim_arity ->
-    SESet.empty
+    args
+      |> List.filter_map (fun x -> x)
+      |> List.map (fun label -> Var (Val label)) |> SESet.of_list
+  | Unknown | Prim _ -> SESet.empty
+  | App _ | FnApp _ | PrimApp _ ->
+    let value, _ = reduce_value se in
+    value
   | _ ->
     PrintSE.print_se se;
     failwith "Invalid structured value"
@@ -528,7 +535,7 @@ let step_sc_for_entry x =
     let reduced =
       SESet.fold
         (fun se acc ->
-          let value = reduce_structured_value se in
+          let value = reduce_argument_of_unknown se in
           SESet.union value acc)
         set SESet.empty
     in
@@ -555,7 +562,7 @@ let step_sc_for_pair (lhs, rhs) =
            with _ -> ())
          | _ -> ())
   | AppliedToUnknown ->
-    let value = reduce_structured_value rhs in
+    let value = reduce_argument_of_unknown rhs in
     update_sc lhs value
   | _ -> failwith "Invalid LHS"
 
