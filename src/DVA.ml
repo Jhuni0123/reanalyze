@@ -600,11 +600,11 @@ let preprocess =
 let cmtStructures : cmt_structure list ref = ref []
 
 let processCmtStructure modname (structure : CL.Typedtree.structure) =
-  print_endline "processCmtStructure";
-  print_endline modname;
-  Print.print_structure structure;
-  print_newline ();
   let structure = structure |> preprocess.structure preprocess in
+  (* prerr_endline "processCmtStructure"; *)
+  (* prerr_endline modname; *)
+  (* Print.print_structure 0 structure; *)
+  (* prerr_newline (); *)
   structure |> traverse_ast.structure traverse_ast |> ignore;
   let label = Label.new_cmt_module modname in
   let v, seff = se_of_struct structure in
@@ -715,7 +715,7 @@ let reportDead ~ppf =
              (* prerr_newline (); *)
              ()
            | ModExpr me ->
-             (* Print.print_module_expr me.mod_exp; *)
+             (* Print.print_module_expr 0 me.mod_exp; *)
              (* prerr_newline (); *)
              ()
            | _ -> ())

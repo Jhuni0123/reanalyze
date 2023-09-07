@@ -15,13 +15,13 @@ let print_list print_elem sep l =
     match l with
     | [] -> ()
     | [hd] ->
-        prerr_string "(";
+        (* prerr_string "("; *)
         print_elem hd;
-        prerr_string ")"
+        (* prerr_string ")" *)
     | hd :: tl ->
-        prerr_string "(";
+        (* prerr_string "("; *)
         print_elem hd;
-        prerr_string ")";
+        (* prerr_string ")"; *)
         prerr_string sep;
         _print_list tl;
   in
@@ -136,13 +136,15 @@ and print_live l =
   | Live.Top -> ps "⊤"
   | Bot -> ps "⊥"
   | Ctor cs ->
+    prerr_string "Ctor";
     cs |> CtorMap.bindings
     |> print_list
          (fun (ctor, v) ->
            print_ctor ctor;
-           ps "(";
+           (* ps "("; *)
            v |> print_list print_live ",";
-           ps ")")
+           (* ps ")" *)
+         )
          "+"
   | Func body ->
       prerr_string "() -> (";
