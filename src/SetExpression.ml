@@ -1,4 +1,3 @@
-open CL.Types
 open CL.Typedtree
 
 module Current = struct
@@ -202,7 +201,6 @@ end)
 module SETbl = Hashtbl.Make (struct
   type t = se
 
-  let compare = compare_se
   let equal a b = match (a, b) with Id x, Id y -> Id.equal x y | _ -> a = b
   let hash = function Id x -> Id.hash x | x -> Hashtbl.hash x
 end)

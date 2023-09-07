@@ -41,7 +41,7 @@ let rec join a b =
       | _, [] -> l1
       | hd1 :: tl1, hd2 :: tl2 -> join hd1 hd2 :: join_list tl1 tl2
     in
-    let merged = CtorMap.merge (fun ctor ls ls' ->
+    let merged = CtorMap.merge (fun _ctor ls ls' ->
       match ls, ls' with
       | None, x | x, None -> x
       | Some ls, Some ls' -> Some (join_list ls ls')
@@ -61,9 +61,9 @@ let rec meet a b =
       | hd1 :: tl1, hd2 :: tl2 -> meet hd1 hd2 :: meet_list tl1 tl2
       | _ -> []
     in
-    let merged = CtorMap.merge (fun ctor ls ls' ->
+    let merged = CtorMap.merge (fun _ctor ls ls' ->
       match ls, ls' with
-      | None, x | x, None -> None
+      | None, _ | _, None -> None
       | Some ls, Some ls' -> Some (meet_list ls ls')
       ) cs cs'
     in 

@@ -201,13 +201,6 @@ module ValueDependencyAnalysis = struct
                     addEdge (Var (Val param)) (Var (Val arg)) Func.id
                   | _ -> ())
            | _ -> ())
-    (* TODO: check below logic once more *)
-    (* cases *)
-    (* |> List.iter (fun case -> *)
-    (*        addEdge (expr e) (expr case.c_rhs) *)
-    (*          (Func.ifnotbot Live.Top); *)
-    (*        addEdge (expr e) (expr case.c_rhs) *)
-    (*          (Func.iftop Live.Top)) *)
     | Texp_apply (e_f, args) ->
       lookup_sc (expr e)
       |> SESet.iter (function
@@ -222,21 +215,15 @@ module ValueDependencyAnalysis = struct
              analyze_prim_dep (prim, prim_args)
            | _ -> ());
       let fn l =
-        let l' =
-          args
-          |> List.fold_left
-               (fun acc arg ->
-                 match arg with _, Some _ -> acc | _, None -> Func.body acc)
-               l
-        in
-        let l'' =
-          l'
-          |> List.fold_right
-               (fun arg acc ->
-                 match arg with _, Some _ -> Live.Func acc | _, None -> acc)
-               args
-        in
-        l''
+        args
+        |> List.fold_left
+             (fun acc arg ->
+               match snd arg with Some _ -> acc | None -> Func.body acc)
+             l
+        |> List.fold_right
+             (fun arg acc ->
+               match snd arg with Some _ -> Live.Func acc | None -> acc)
+             args
       in
       addEdge (expr e) (expr e_f) fn
     | Texp_match (exp, cases, exn_cases, _) ->
@@ -302,7 +289,6 @@ module ValueDependencyAnalysis = struct
       |> List.iteri (fun i exp ->
              addEdge (expr e) (expr exp) (Func.field (Tuple, Some i)))
     | Texp_construct (_, cstr_desc, exps) ->
-      (* assert (List.length exps = cstr_desc.cstr_arity); *)
       exps
       |> List.iteri (fun i exp ->
              addEdge (expr e) (expr exp)
@@ -319,16 +305,7 @@ module ValueDependencyAnalysis = struct
                     addEdge (expr e) (Mem mem)
                       (Func.field (Record, Some ld.lbl_pos));
                     match ldef with
-                    | Kept _ ->
-                      ()
-                      (* (match extended_expression with *)
-                      (* | Some ee -> *)
-                      (*   lookup_sc (expr ee) |> SESet.iter (function *)
-                      (*     | Ctor (Record, eemems) -> *)
-                      (*         addEdge (Mem mem) (Mem (List.nth eemems (ld.lbl_pos))) Func.id *)
-                      (*     | _ -> () *)
-                      (*   ) *)
-                      (* | None -> ()) *)
+                    | Kept _ -> ()
                     | Overridden (_, fe) -> addEdge (Mem mem) (expr fe) Func.id)
            | _ -> ());
       let fn live =
@@ -344,23 +321,8 @@ module ValueDependencyAnalysis = struct
       in
       match extended_expression with
       | Some ee -> addEdge (expr e) (expr ee) fn
-      | None -> ()
-      (* fields |> Array.iter (fun (ld, ldef) -> *)
-      (* match ldef with *)
-      (* | Overridden (_, fe) -> () *)
-      (* (1* addEdge (expr e) (expr fe) (Func.field (Record, Some ld.lbl_pos)) *1) *)
-      (* | Kept _ -> *)
-      (* (match extended_expression with *)
-      (* | Some ee -> *)
-      (*     addEdge (expr e) (expr ee) (Func.filter_field (Record, Some ld.lbl_pos)) *)
-      (* | _ -> ()) *)
-      (* ) *))
+      | None -> ())
     | Texp_field (exp, _, ld) ->
-      (* lookup_sc (expr exp) |> SESet.iter (function *)
-      (*   | Ctor (Record, mems) -> *)
-      (*       (try addEdge (expr e) (Mem (List.nth mems (ld.lbl_pos))) Func.id with _ -> ()) *)
-      (*   | _ -> () *)
-      (* ); *)
       addEdge (expr e) (expr exp) (Func.from_field (Record, Some ld.lbl_pos))
     | Texp_setfield (exp1, _, ld, exp2) ->
       lookup_sc (expr exp1)
@@ -370,14 +332,7 @@ module ValueDependencyAnalysis = struct
              with _ -> ())
            | Unknown -> addEdge Top (expr exp2) Func.top
            | _ -> ());
-      (* TODO: check once more *)
-      (* maybe not need to join *)
       addEdge Top (expr exp1) (fun _ -> Live.empty_ctor)
-      (* joinLive (expr exp2) Live.Top; *)
-      (* let fld_se = Fld (Label.of_expression exp1, (Record, Some label_desc.lbl_pos)) in *)
-      (* addEdge fld_se (expr exp2) Func.id; *)
-      (* addEdge (expr exp1) fld_se (Func.field (Record, Some label_desc.lbl_pos)) *)
-      (* addEdge (expr exp1) (expr exp2) (Func.field (Record, Some label_desc.lbl_pos)) *)
     | Texp_array exps ->
       exps
       |> List.iter (fun exp ->
@@ -578,7 +533,7 @@ module ValueDependencyAnalysis = struct
     addEdge
       (Id (Id.createCmtModuleId cmtMod.modname))
       (Var (Val cmtMod.label)) Func.id;
-    collectStruct (Var (Val cmtMod.label)) cmtMod.structure;
+    collectStruct (Var (Val cmtMod.label)) cmtMod.structure |> ignore;
     collectMapper.structure collectMapper cmtMod.structure |> ignore;
     ()
 
