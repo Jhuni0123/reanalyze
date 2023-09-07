@@ -3,6 +3,8 @@ open ClosureAnalysis
 open CL.Typedtree
 open CL.Types
 
+module StringSet = Set.Make(String)
+
 type cmt_structure = {modname : string; structure : structure; label : Label.t}
 
 let rec isUnitType (t : type_expr) =
@@ -110,6 +112,8 @@ module ValueDependencyAnalysis = struct
         | Some ls ->
           List.nth_opt ls (i |> Option.value ~default:0)
           |> Option.value ~default:Live.Bot)
+
+    let member name : Live.t -> Live.t = field (Member name, Some 0)
 
     let from_field ((ctor, i) : fld) : Live.t -> Live.t =
      fun l ->
@@ -430,60 +434,45 @@ module ValueDependencyAnalysis = struct
 
   let bindings_of_pat (pat : pattern) =
     pattern_fold_id_right List.cons pat []
-  (* match pat.pat_desc with *)
-  (* | Tpat_any | Tpat_constant _ -> [] *)
-  (* | Tpat_var (x, _) -> [x] *)
-  (* | Tpat_alias (p, x, _) -> (bindings_of_pat p) @ [x] *)
-  (* | Tpat_tuple pats -> pats |> List.map bindings_of_pat |> List.flatten *)
-  (* | Tpat_construct (_, _, pats) -> *)
-  (*   pats |> List.map bindings_of_pat |> List.flatten *)
-  (* | Tpat_variant (_, None, _) -> [] *)
-  (* | Tpat_variant (_, Some p, _) -> bindings_of_pat p *)
-  (* | Tpat_record (fields, _) -> *)
-  (*     fields |> List.map (fun (_, _, pat) -> bindings_of_pat pat) |> List.flatten *)
-  (* | Tpat_array pats -> pats |> List.map bindings_of_pat |> List.flatten *)
-  (* | Tpat_lazy p -> bindings_of_pat p *)
-  (* | Tpat_or (lhs, rhs, _) -> (bindings_of_pat lhs) @ (bindings_of_pat rhs) *)
 
-  let bindings_of_struct_item (item : structure_item) =
-    match item.str_desc with
-    | Tstr_eval _ -> []
+  let collectStructItem se str_item members =
+    let processMember id members =
+      let name = id |> CL.Ident.name in
+      if members |> StringSet.mem name then
+        addEdge se (Id (Id.create !Current.cmtModName id)) (Func.member name);
+      members |> StringSet.remove name
+    in
+    match str_item.str_desc with
+    | Tstr_eval _ -> members
     | Tstr_value (_, vbs) ->
-      vbs |> List.map (fun vb -> bindings_of_pat vb.vb_pat) |> List.flatten
-    | Tstr_module mb -> [mb.mb_id]
-    | Tstr_recmodule mbs -> mbs |> List.map (fun mb -> mb.mb_id)
-    | Tstr_include {incl_type} ->
-      let get_id_opt = function
-        | Sig_value (x, _) | Sig_module (x, _, _) -> Some x
+      let bindings = vbs |> List.map (fun vb -> bindings_of_pat vb.vb_pat) |> List.flatten in
+      List.fold_right (processMember) bindings members
+    | Tstr_module mb -> processMember mb.mb_id members
+    | Tstr_recmodule mbs -> members |> List.fold_right (fun mb -> processMember mb.mb_id) mbs
+    | Tstr_include {incl_mod; incl_type} ->
+      let get_member_opt = function
+        | Sig_value (x, _) | Sig_module (x, _, _) -> Some (CL.Ident.name x)
         | _ -> None
       in
-      incl_type |> List.filter_map get_id_opt
-    | Tstr_primitive vd -> [vd.val_id]
-    | _ -> []
+      let exported = incl_type |> List.filter_map get_member_opt |> List.filter (fun name -> members |> StringSet.mem name) in
+      let fn = fun x -> List.fold_right (fun name -> Live.join (Func.member name x)) exported Live.Bot in
+      addEdge se (module_expr incl_mod) fn;
+      StringSet.diff members (StringSet.of_list exported)
+    | Tstr_primitive vd -> processMember vd.val_id members
+    | _ -> members
 
-  let bindings_of_struct (str : structure) =
-    str.str_items
-    |> List.map bindings_of_struct_item
-    |> List.flatten
-    |> List.map (fun id -> (CL.Ident.name id, id))
-    |> List.to_seq |> StringMap.of_seq |> StringMap.bindings
-    |> List.map (fun (_, id) -> id)
+  let collectStruct se str =
+      let get_member_opt = function
+        | Sig_value (x, _) | Sig_module (x, _, _) -> Some (CL.Ident.name x)
+        | _ -> None
+      in
+    let members = str.str_type |> List.filter_map get_member_opt |> StringSet.of_list in
+    List.fold_right (collectStructItem se) str.str_items members
 
   let collectModuleExpr (me : module_expr) =
     match me.mod_desc with
     | Tmod_ident (path, _) -> collectPath (module_expr me) path Func.id
-    | Tmod_structure str ->
-      let ids = bindings_of_struct str in
-      ids
-      |> List.iter (fun id ->
-             addEdge (module_expr me)
-               (Id (Id.create !Current.cmtModName id))
-               (Func.field (Member (CL.Ident.name id), Some 0)))
-      (* lookup_sc (module_expr me) |> SESet.iter (function *)
-      (*   | Ctor (Member name, [label]) -> *)
-      (*       addEdge (module_expr me) (Var (Val label)) (Func.field (Member name, Some 0)) *)
-      (*   | _ -> () *)
-      (* ); *)
+    | Tmod_structure str -> collectStruct (module_expr me) str |> ignore
     | Tmod_functor (x, _, _, _) ->
       lookup_sc (module_expr me)
       |> SESet.iter (function
@@ -589,17 +578,7 @@ module ValueDependencyAnalysis = struct
     addEdge
       (Id (Id.createCmtModuleId cmtMod.modname))
       (Var (Val cmtMod.label)) Func.id;
-    let ids = bindings_of_struct cmtMod.structure in
-    ids
-    |> List.iter (fun id ->
-           addEdge (Var (Val cmtMod.label))
-             (Id (Id.create !Current.cmtModName id))
-             (Func.field (Member (CL.Ident.name id), Some 0)));
-    (* lookup_sc (Var (Val cmtMod.label)) |> SESet.iter (function *)
-    (*   | Ctor (Member name, [label]) -> *)
-    (*       addEdge (Var (Val cmtMod.label)) (Var (Val label)) (Func.field (Member name, Some 0)) *)
-    (*   | _ -> () *)
-    (* ); *)
+    collectStruct (Var (Val cmtMod.label)) cmtMod.structure;
     collectMapper.structure collectMapper cmtMod.structure |> ignore;
     ()
 
