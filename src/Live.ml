@@ -135,7 +135,3 @@ let rec controlledByPat (pat : pattern) =
   | Tpat_or (pat1, pat2, _) ->
     join (controlledByPat pat1) (controlledByPat pat2)
   | Tpat_lazy _ -> Top
-
-let liveness : (se, t) Hashtbl.t = Hashtbl.create 10
-let get se =
-  Hashtbl.find_opt liveness se |> Option.value ~default:Bot

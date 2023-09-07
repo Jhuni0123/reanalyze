@@ -38,34 +38,68 @@ let annotatedAsLive attributes =
   |> Annotation.getAttributePayload (( = ) DeadCommon.liveAnnotation)
   <> None
 
-type value = V_Expr of Label.t | V_Id of Id.t
+type value =
+  | Top
+  | V_Expr of Label.t
+  | V_Id of Id.t
+  | V_Mem of Label.t
+
+let expr e = V_Expr (Label.of_expression e)
+let module_expr me = V_Expr (Label.of_module_expr me)
+let id x = V_Id (Id.create x)
+
+
+let compare_value a b =
+  match (a, b) with V_Id x, V_Id y -> Id.compare x y | _ -> compare a b
+
+module ValueSet = Set.Make (struct
+  type t = value
+
+  let compare = compare_value
+end)
+
+let print_value = function
+  | Top -> prerr_string "⊤"
+  | V_Expr label -> prerr_string "Expr("; PrintSE.print_summary label; prerr_string ")"
+  | V_Id id ->
+      let summary = Id.to_summary id in
+      prerr_string "Id(";
+      prerr_string @@ Id.to_string id ^ " @ ";
+      PrintSE.print_code_loc summary.id_loc;
+      prerr_string ")"
+  | V_Mem (ctx, i) -> prerr_string "Mem("; prerr_string @@ ctx ^ ", " ^ string_of_int i; prerr_string ")"
 
 module ValueDependency = struct
   type func = Live.t -> Live.t
-  type t = {mutable adj : (se * func) list; mutable rev_adj : (se * func) list}
+  type t = {mutable adj : (value * func) list; mutable rev_adj : (value * func) list}
 
   let createEmpty () = {adj = []; rev_adj = []}
 end
 
-let graph : (se, ValueDependency.t) Hashtbl.t = Hashtbl.create 10
 
-let getDeps se =
-  match Hashtbl.find_opt graph se with
+let liveness : (value, Live.t) Hashtbl.t = Hashtbl.create 10
+let getLive v =
+  Hashtbl.find_opt liveness v |> Option.value ~default:Live.Top
+
+let graph : (value, ValueDependency.t) Hashtbl.t = Hashtbl.create 10
+
+let getDeps v =
+  match Hashtbl.find_opt graph v with
   | Some deps -> deps
   | None ->
     let deps = ValueDependency.createEmpty () in
-    Hashtbl.add graph se deps;
+    Hashtbl.add graph v deps;
     deps
 
 let print_graph () =
   prerr_endline "============= Graph =============";
   graph
-  |> Hashtbl.iter (fun se1 (vd : ValueDependency.t) ->
+  |> Hashtbl.iter (fun v1 (vd : ValueDependency.t) ->
          vd.adj
-         |> List.iter (fun (se2, fn) ->
-                PrintSE.print_se se1;
+         |> List.iter (fun (v2, fn) ->
+                print_value v1;
                 prerr_string " --> ";
-                PrintSE.print_se se2;
+                print_value v2;
                 prerr_newline ();
                 PrintSE.print_live (fn Live.Top);
                 prerr_newline ()))
@@ -82,21 +116,18 @@ let addEdge v1 v2 f =
   d1.adj <- (v2, f) :: d1.adj;
   d2.rev_adj <- (v1, f) :: d2.rev_adj
 
-let getLive se =
-  Hashtbl.find_opt Live.liveness se |> Option.value ~default:Live.Bot
-
 let hasSideEffect label =
   lookup_sc (Var (SideEff label)) |> SESet.mem SideEffect
 
-let joinLive se live =
-  match Hashtbl.find_opt Live.liveness se with
-  | None -> Hashtbl.add Live.liveness se live
-  | Some l -> Hashtbl.replace Live.liveness se (Live.join l live)
+let joinLive v live =
+  match Hashtbl.find_opt liveness v with
+  | None -> Hashtbl.add liveness v live
+  | Some l -> Hashtbl.replace liveness v (Live.join l live)
 
-let meetLive se live =
-  match Hashtbl.find_opt Live.liveness se with
-  | None -> Hashtbl.add Live.liveness se live
-  | Some l -> Hashtbl.replace Live.liveness se (Live.meet l live)
+let meetLive v live =
+  match Hashtbl.find_opt liveness v with
+  | None -> Hashtbl.add liveness v live
+  | Some l -> Hashtbl.replace liveness v (Live.meet l live)
 
 module ValueDependencyAnalysis = struct
   let ( >> ) f g x = g (f x)
@@ -147,45 +178,42 @@ module ValueDependencyAnalysis = struct
      fun ls -> Ctor (CtorMap.singleton ctor ls)
   end
 
-  let expr e = Var (Val (Label.of_expression e))
-  let module_expr me = Var (Val (Label.of_module_expr me))
-
-  let rec collectPath se (path : CL.Path.t) f =
+  let rec collectPath v (path : CL.Path.t) f =
     match path with
-    | Pident id -> addEdge se (Id (Id.create id)) f
+    | Pident x -> addEdge v (id x) f
     | Pdot (p', fld, _) ->
-      collectPath se p' (f >> fun l -> Func.ctor (Member fld) [l])
+      collectPath v p' (f >> fun l -> Func.ctor (Member fld) [l])
     | Papply _ -> failwith "I don't know what Papply do"
 
-  let rec collectBind pat se (f : Live.t -> Live.t) =
+  let rec collectBind pat v (f : Live.t -> Live.t) =
     match pat.pat_desc with
-    | Tpat_var (id, _) -> addEdge (Id (Id.create id)) se f
-    | Tpat_alias (pat, id, _) ->
-      addEdge (Id (Id.create id)) se f;
-      collectBind pat se f
+    | Tpat_var (x, _) -> addEdge (id x) v f
+    | Tpat_alias (pat, x, _) ->
+      addEdge (id x) v f;
+      collectBind pat v f
     | Tpat_tuple pats ->
       pats
       |> List.iteri (fun i pat ->
-             collectBind pat se (Func.from_field (Tuple, Some i) >> f))
+             collectBind pat v (Func.from_field (Tuple, Some i) >> f))
     | Tpat_construct (_, cstr_desc, pats) ->
       pats
       |> List.iteri (fun i pat ->
-             collectBind pat se
+             collectBind pat v
                (Func.from_field (Construct cstr_desc.cstr_name, Some i) >> f))
     | Tpat_variant (_, None, _) -> ()
     | Tpat_variant (lbl, Some pat, _) ->
-      collectBind pat se (Func.from_field (Variant lbl, Some 0) >> f)
+      collectBind pat v (Func.from_field (Variant lbl, Some 0) >> f)
     | Tpat_record (fields, _) ->
       fields
       |> List.iter (fun (_, label_desc, pat) ->
-             collectBind pat se
+             collectBind pat v
                (Func.from_field (Record, Some label_desc.lbl_pos) >> f))
     | Tpat_array pats ->
-      pats |> List.iter (fun pat -> collectBind pat se (Func.ifnotbot Live.Top))
+      pats |> List.iter (fun pat -> collectBind pat v (Func.ifnotbot Live.Top))
     | Tpat_or (pat1, pat2, _) ->
-      collectBind pat1 se f;
-      collectBind pat2 se f
-    | Tpat_lazy pat -> collectBind pat se (Func.ifnotbot Live.Top)
+      collectBind pat1 v f;
+      collectBind pat2 v f
+    | Tpat_lazy pat -> collectBind pat v (Func.ifnotbot Live.Top)
     | Tpat_any -> ()
     | Tpat_constant _ -> ()
 
@@ -193,7 +221,7 @@ module ValueDependencyAnalysis = struct
     function
     | {prim_name = "%ignore"}, [_] -> ()
     | _prim, args ->
-      args |> List.iter (fun arg -> addEdge Top (Var (Val arg)) Func.top)
+      args |> List.iter (fun arg -> addEdge Top (V_Expr arg) Func.top)
 
   let collectExpr e =
     match e.exp_desc with
@@ -201,21 +229,21 @@ module ValueDependencyAnalysis = struct
     | Texp_constant _ -> ()
     | Texp_let (_, _, e_body) -> addEdge (expr e) (expr e_body) Func.id
     | Texp_function {cases} ->
-      lookup_sc (expr e)
+      lookup_sc (Var (Val (Label.of_expression e)))
       |> SESet.iter (function
            | Fn (param, _) ->
              cases
              |> List.iter (fun case ->
-                    collectBind case.c_lhs (Var (Val param)) Func.id;
+                    collectBind case.c_lhs (V_Expr param) Func.id;
                     addEdge (expr e) (expr case.c_rhs) Func.body);
              lookup_sc (Var (Val param))
              |> SESet.iter (function
                   | Var (Val arg) ->
-                    addEdge (Var (Val param)) (Var (Val arg)) Func.id
+                    addEdge (V_Expr param) (V_Expr arg) Func.id
                   | _ -> ())
            | _ -> ())
     | Texp_apply (e_f, args) ->
-      lookup_sc (expr e)
+      lookup_sc (Var (Val (Label.of_expression e)))
       |> SESet.iter (function
            | PrimApp (prim, Some arg :: tl)
              when front_arg_len tl + 1 >= prim.prim_arity ->
@@ -308,16 +336,16 @@ module ValueDependencyAnalysis = struct
     | Texp_variant (label, Some exp) ->
       addEdge (expr e) (expr exp) (Func.field (Variant label, Some 0))
     | Texp_record {fields; extended_expression} -> (
-      lookup_sc (expr e)
+      lookup_sc (Var (Val (Label.of_expression e)))
       |> SESet.iter (function
            | Ctor (Record, mems) ->
              List.combine mems (fields |> Array.to_list)
              |> List.iter (fun (mem, (ld, ldef)) ->
-                    addEdge (expr e) (Mem mem)
+                    addEdge (expr e) (V_Mem mem)
                       (Func.field (Record, Some ld.lbl_pos));
                     match ldef with
                     | Kept _ -> ()
-                    | Overridden (_, fe) -> addEdge (Mem mem) (expr fe) Func.id)
+                    | Overridden (_, fe) -> addEdge (V_Mem mem) (expr fe) Func.id)
            | _ -> ());
       let fn live =
         let fields_live =
@@ -336,10 +364,10 @@ module ValueDependencyAnalysis = struct
     | Texp_field (exp, _, ld) ->
       addEdge (expr e) (expr exp) (Func.from_field (Record, Some ld.lbl_pos))
     | Texp_setfield (exp1, _, ld, exp2) ->
-      lookup_sc (expr exp1)
+      lookup_sc (Var (Val (Label.of_expression exp1)))
       |> SESet.iter (function
            | Ctor (Record, mems) -> (
-             try addEdge (Mem (List.nth mems ld.lbl_pos)) (expr exp2) Func.id
+             try addEdge (V_Mem (List.nth mems ld.lbl_pos)) (expr exp2) Func.id
              with _ -> ())
            | Unknown -> addEdge Top (expr exp2) Func.top
            | _ -> ());
@@ -363,11 +391,11 @@ module ValueDependencyAnalysis = struct
     | Texp_while (exp1, exp2) ->
       if exp2 |> Label.of_expression |> hasSideEffect then
         addEdge Top (expr exp1) Func.top
-    | Texp_for (id, _, exp1, exp2, _, exp3) ->
-      addEdge (Id (Id.create id)) (expr exp1) Func.id;
-      addEdge (Id (Id.create id)) (expr exp2) Func.id;
+    | Texp_for (x, _, exp1, exp2, _, exp3) ->
+      addEdge (id x) (expr exp1) Func.id;
+      addEdge (id x) (expr exp2) Func.id;
       if exp3 |> Label.of_expression |> hasSideEffect then
-        addEdge Top (Id (Id.create id)) Func.top
+        addEdge Top (id x) Func.top
     | Texp_send (exp1, _, Some exp2) ->
       addEdge Top (expr exp1) Func.top;
       addEdge Top (expr exp2) Func.top
@@ -376,18 +404,18 @@ module ValueDependencyAnalysis = struct
     | Texp_send (exp1, _, None) -> addEdge Top (expr exp1) Func.top
     (* addEdge (expr e) (expr exp1) (Func.ifnotbot Live.Top) *)
     | Texp_letmodule (x, _, me, exp) ->
-      addEdge (Id (Id.create x)) (module_expr me) Func.id;
+      addEdge (id x) (module_expr me) Func.id;
       addEdge (expr e) (expr exp) Func.id
     | _ -> ()
 
   let iter_id_in_pat f pat = ids_in_pat pat |> List.iter (fun (id, _) -> f id)
   let bindings_of_pat (pat : pattern) = ids_in_pat pat |> List.map fst
 
-  let collectStructItem se str_item members =
-    let processMember id members =
-      let name = id |> CL.Ident.name in
+  let collectStructItem v str_item members =
+    let processMember x members =
+      let name = x |> CL.Ident.name in
       if members |> StringSet.mem name then
-        addEdge se (Id (Id.create id)) (Func.member name);
+        addEdge v (id x) (Func.member name);
       members |> StringSet.remove name
     in
     match str_item.str_desc with
@@ -415,12 +443,12 @@ module ValueDependencyAnalysis = struct
           (fun name -> Live.join (Func.member name x))
           exported Live.Bot
       in
-      addEdge se (module_expr incl_mod) fn;
+      addEdge v (module_expr incl_mod) fn;
       StringSet.diff members (StringSet.of_list exported)
     | Tstr_primitive vd -> processMember vd.val_id members
     | _ -> members
 
-  let collectStruct se str =
+  let collectStruct v str =
     let get_member_opt = function
       | Sig_value (x, _) | Sig_module (x, _, _) -> Some (CL.Ident.name x)
       | _ -> None
@@ -428,28 +456,28 @@ module ValueDependencyAnalysis = struct
     let members =
       str.str_type |> List.filter_map get_member_opt |> StringSet.of_list
     in
-    List.fold_right (collectStructItem se) str.str_items members
+    List.fold_right (collectStructItem v) str.str_items members
 
   let collectModuleExpr (me : module_expr) =
     match me.mod_desc with
     | Tmod_ident (path, _) -> collectPath (module_expr me) path Func.id
     | Tmod_structure str -> collectStruct (module_expr me) str |> ignore
     | Tmod_functor (x, _, _, _) ->
-      lookup_sc (module_expr me)
+      lookup_sc (Var (Val (Label.of_module_expr me)))
       |> SESet.iter (function
            | Fn (param, _) ->
-             addEdge (Id (Id.create x)) (Var (Val param)) Func.id;
+             addEdge (id x) (V_Expr param) Func.id;
              lookup_sc (Var (Val param))
              |> SESet.iter (function
                   | Var (Val arg) ->
-                    addEdge (Var (Val param)) (Var (Val arg)) Func.id
+                    addEdge (V_Expr param) (V_Expr arg) Func.id
                   | _ -> ())
            | _ -> ())
     | Tmod_apply (me_f, _, _) ->
-      lookup_sc (module_expr me)
+      lookup_sc (Var (Val (Label.of_module_expr me)))
       |> SESet.iter (function
            | App (f, Some _ :: tl) -> (
-             addEdge (module_expr me) (Var (Val f)) (Func.ifnotbot Live.Top);
+             addEdge (module_expr me) (V_Expr f) (Func.ifnotbot Live.Top);
              match tl with
              | [] ->
                lookup_sc (Var (Val f))
@@ -457,7 +485,7 @@ module ValueDependencyAnalysis = struct
                     | Fn (_, bodies) ->
                       bodies
                       |> List.iter (fun body ->
-                             addEdge (module_expr me) (Var (Val body)) Func.id)
+                             addEdge (module_expr me) (V_Expr body) Func.id)
                     | _ -> ())
              | _ -> ())
            | _ -> ());
@@ -472,11 +500,11 @@ module ValueDependencyAnalysis = struct
       collectBind vb.vb_pat (expr vb.vb_expr) Func.id;
       if vb.vb_attributes |> annotatedAsLive then
         vb.vb_pat
-        |> iter_id_in_pat (fun id -> addEdge Top (Id (Id.create id)) Func.top);
+        |> iter_id_in_pat (fun x -> addEdge Top (id x) Func.top);
       super.value_binding self vb
     in
     let module_binding self mb =
-      addEdge (Id (Id.create mb.mb_id)) (module_expr mb.mb_expr) Func.id;
+      addEdge (id mb.mb_id) (module_expr mb.mb_expr) Func.id;
       super.module_binding self mb
     in
     let expr self e =
@@ -489,16 +517,16 @@ module ValueDependencyAnalysis = struct
     in
     {super with expr; module_expr; value_binding; module_binding}
 
-  let scc () : se list list =
+  let scc () : value list list =
     let counter = ref 0 in
     let stack = Stack.create () in
     let num = Hashtbl.create 256 in
     let getnum vm =
       match Hashtbl.find_opt num vm with Some res -> res | None -> 0
     in
-    let finished = ref SESet.empty in
-    let markfinished vm = finished := !finished |> SESet.add vm in
-    let isfinished vm = !finished |> SESet.mem vm in
+    let finished = ref ValueSet.empty in
+    let markfinished vm = finished := !finished |> ValueSet.add vm in
+    let isfinished vm = !finished |> ValueSet.mem vm in
     let scc = Stack.create () in
     let rec dfs v =
       counter := !counter + 1;
@@ -520,7 +548,7 @@ module ValueDependencyAnalysis = struct
           let t = stack |> Stack.pop in
           nodes |> Stack.push t;
           markfinished t;
-          if compare_se t v = 0 then break := true
+          if compare_value t v = 0 then break := true
         done;
         scc |> Stack.push (nodes |> Stack.to_seq |> List.of_seq));
       result
@@ -532,23 +560,23 @@ module ValueDependencyAnalysis = struct
   let collect cmtMod =
     Current.cmtModName := cmtMod.modname;
     addEdge
-      (Id (Id.createCmtModuleId cmtMod.modname))
-      (Var (Val cmtMod.label)) Func.id;
-    collectStruct (Var (Val cmtMod.label)) cmtMod.structure |> ignore;
+      (V_Id (Id.createCmtModuleId cmtMod.modname))
+      (V_Expr cmtMod.label) Func.id;
+    collectStruct (V_Expr cmtMod.label) cmtMod.structure |> ignore;
     collectMapper.structure collectMapper cmtMod.structure |> ignore;
     ()
 
   let solve () =
     lookup_sc AppliedToUnknown
     |> SESet.iter (function
-         | Var (Val label) -> addEdge Top (Var (Val label)) Func.top
+         | Var (Val label) -> addEdge Top (V_Expr label) Func.top
          | _ -> ());
     let dag = scc () in
     let dependentsLives node =
       let dependents = (getDeps node).rev_adj in
       dependents
       |> List.fold_left
-           (fun acc (dep, f) -> dep |> Live.get |> f |> Live.join acc)
+           (fun acc (dep, f) -> dep |> getLive |> f |> Live.join acc)
            Live.Bot
     in
     (* prerr_endline "============ SCC Order ============="; *)
@@ -643,40 +671,19 @@ let processCmt (cmt_infos : CL.Cmt_format.cmt_infos) =
     processCmtStructure cmt_infos.cmt_modname structure
   | _ -> ()
 
-let isDeadValue se = se |> Live.get = Live.Bot
+let isDeadValue v = v |> getLive = Live.Bot
 
 let isDeadExpr label =
-  Var (Val label) |> isDeadValue && not (label |> hasSideEffect)
-
-let rec collectDeadPattern addDeadValue pat =
-  let recurse = collectDeadPattern addDeadValue in
-  match pat.pat_desc with
-  | Tpat_any -> ()
-  | Tpat_var (id, _) ->
-    let se = Id (Id.create id) in
-    if se |> isDeadValue then addDeadValue se
-  | Tpat_alias (p, id, _) ->
-    let se = Id (Id.create id) in
-    if se |> isDeadValue then addDeadValue se;
-    recurse p
-  | Tpat_constant _ -> ()
-  | Tpat_tuple pats -> pats |> List.iter recurse
-  | Tpat_construct (_, _, pats) -> pats |> List.iter recurse
-  | Tpat_variant (_, None, _) -> ()
-  | Tpat_variant (_, Some pat, _) -> recurse pat
-  | Tpat_record (fields, _) ->
-    fields |> List.iter (fun (_, _, pat) -> recurse pat)
-  | Tpat_array pats -> pats |> List.iter recurse
-  | Tpat_or (pat1, pat2, _) ->
-    recurse pat1;
-    recurse pat2
-  | Tpat_lazy pat -> recurse pat
+  V_Expr label |> isDeadValue && not (label |> hasSideEffect)
 
 let collectDeadValuesMapper addDeadValue =
-  let addDeadExpr label = addDeadValue (Var (Val label)) in
+  let addDeadExpr label = addDeadValue (V_Expr label) in
   let super = CL.Tast_mapper.default in
   let pat self p =
-    collectDeadPattern addDeadValue p;
+    ids_in_pat p |> List.iter (fun (x, _) ->
+      let v = id x in
+      if v |> isDeadValue then addDeadValue v
+    );
     super.pat self p
   in
   let expr self e =
@@ -700,9 +707,9 @@ let collectDeadValuesMapper addDeadValue =
   {super with expr; module_expr; pat}
 
 let collectDeadValues cmts =
-  let deads = ref SESet.empty in
-  let addDeadValue se = deads := !deads |> SESet.add se in
-  let addDeadExpr label = addDeadValue (Var (Val label)) in
+  let deads = ref ValueSet.empty in
+  let addDeadValue v = deads := !deads |> ValueSet.add v in
+  let addDeadExpr label = addDeadValue (V_Expr label) in
   let mapper = collectDeadValuesMapper addDeadValue in
   cmts
   |> List.iter (fun {structure; label; modname} ->
@@ -727,30 +734,28 @@ let reportDead ~ppf =
   prerr_endline "============ Dead Values =============";
   let deads = collectDeadValues !cmtStructures in
   deads
-  |> SESet.iter (fun se ->
-         match se with
-         | Var (Val label) -> (
+  |> ValueSet.iter (fun v ->
+         match v with
+         | V_Expr label -> (
            match label |> Label.to_summary with
            | ValueExpr e ->
              if not e.exp_loc.loc_ghost then (
-               PrintSE.print_se se;
+               print_value v;
                prerr_newline ();
                (* Print.print_expression 0 e.exp; *)
                (* prerr_newline (); *)
                ())
            | ModExpr me ->
              if not me.mod_loc.loc_ghost then (
-               PrintSE.print_se se;
+               print_value v;
                prerr_newline ();
                (* Print.print_module_expr 0 me.mod_exp; *)
                (* prerr_newline (); *)
                ())
            | _ -> ())
-         | Id id ->
+         | V_Id id ->
            if not (Id.to_summary id).id_loc.loc_ghost then (
-             PrintSE.print_se se;
-             prerr_newline ();
-             PrintSE.print_code_loc (Id.to_summary id).id_loc;
+             print_value v;
              prerr_newline ();
              ())
          | _ -> ());

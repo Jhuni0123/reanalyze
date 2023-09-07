@@ -203,7 +203,7 @@ let show_sc_tbl (tbl : SESet.t SETbl.t) =
         | _ -> prerr_string " = ");
         prerr_newline ();
         show_se_with_separator data "\t";
-        Live.get key |> print_live;
+        (* Live.get key |> print_live; *)
         prerr_newline ();
         prerr_newline ();
         )
