@@ -20,7 +20,7 @@ let rec label_of_path path =
     label
   | CL.Path.Pident x ->
     let label = Label.new_path path in
-    init_sc (Var (Val label)) [Id (Id.create !Current.cmtModName x)];
+    init_sc (Var (Val label)) [Id (Id.create x)];
     label
 
 let rec solve_pat (pat : pattern) (e : Label.t) =
@@ -28,10 +28,10 @@ let rec solve_pat (pat : pattern) (e : Label.t) =
   match pat.pat_desc with
   | Tpat_any | Tpat_constant _ -> []
   | Tpat_var (x, _) ->
-    init_sc (Id (Id.create !Current.cmtModName x)) [Var (Val e)];
+    init_sc (Id (Id.create x)) [Var (Val e)];
     [(x, e)]
   | Tpat_alias (p, x, _) ->
-    init_sc (Id (Id.create !Current.cmtModName x)) [Var (Val e)];
+    init_sc (Id (Id.create x)) [Var (Val e)];
     solve_pat p e @ [(x, e)]
   | Tpat_tuple pats ->
     pats
@@ -79,7 +79,7 @@ let rec solve_pat (pat : pattern) (e : Label.t) =
 
 let se_of_mb (mb : module_binding) =
   let label = Label.of_module_expr mb.mb_expr in
-  init_sc (Id (Id.create !Current.cmtModName mb.mb_id)) [Var (Val label)];
+  init_sc (Id (Id.create mb.mb_id)) [Var (Val label)];
   ([(mb.mb_id, label)], [Var (SideEff label)])
 
 let se_of_vb (vb : value_binding) =
@@ -107,7 +107,7 @@ let se_of_struct_item (item : structure_item) =
         CL.Types.signature_item -> (CL.Ident.t * Label.t) option = function
       | Sig_value (x, _) | Sig_module (x, _, _) ->
         let temp = Label.new_temp () in
-        let id = Id.create !Current.cmtModName x in
+        let id = Id.create x in
         init_sc (Id id) [Var (Val temp)];
         init_sc (Var (Val temp))
           [Fld (incl_label, (Member (Id.name id), Some 0))];
@@ -119,7 +119,7 @@ let se_of_struct_item (item : structure_item) =
   | Tstr_primitive vd ->
     let temp = Label.new_temp () in
     init_sc (Var (Val temp)) [Unknown];
-    init_sc (Id (Id.create !Current.cmtModName vd.val_id)) [Var (Val temp)];
+    init_sc (Id (Id.create vd.val_id)) [Var (Val temp)];
     (* ([Ctor (Member (CL.Ident.name vd.val_id), [temp])], []) *)
     ([(vd.val_id, temp)], [])
   | _ -> ([], [])
@@ -286,7 +286,7 @@ let se_of_expr expr =
     let seff_body = Var (SideEff (Label.of_expression exp_body)) in
     ([], [seff_cond; seff_body])
   | Texp_for (x, _, exp1, exp2, _, exp_body) ->
-    init_sc (Id (Id.create !Current.cmtModName x)) [];
+    init_sc (Id (Id.create x)) [];
     let seff1 = Var (SideEff (Label.of_expression exp1)) in
     let seff2 = Var (SideEff (Label.of_expression exp2)) in
     let seff_body = Var (SideEff (Label.of_expression exp_body)) in
@@ -294,7 +294,7 @@ let se_of_expr expr =
   | Texp_letmodule (x, _, me, e) ->
     let val_m = Var (Val (Label.of_module_expr me)) in
     let val_e = Var (Val (Label.of_expression e)) in
-    init_sc (Id (Id.create !Current.cmtModName x)) [val_m];
+    init_sc (Id (Id.create x)) [val_m];
     let seff_m = Var (SideEff (Label.of_module_expr me)) in
     let seff_e = Var (SideEff (Label.of_expression e)) in
     ([val_e], [seff_m; seff_e])
@@ -319,7 +319,7 @@ let se_of_module_expr (m : CL.Typedtree.module_expr) =
   match m.mod_desc with
   | Tmod_functor (x, _, _, me) ->
     let param = Label.new_param x in
-    init_sc (Id (Id.create !Current.cmtModName x)) [Var (Val param)];
+    init_sc (Id (Id.create x)) [Var (Val param)];
     ([Fn (param, [Label.of_module_expr me])], [])
   | Tmod_ident (x, _) ->
     let x = label_of_path x in

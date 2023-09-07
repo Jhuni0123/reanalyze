@@ -2,8 +2,22 @@ open SetExpression
 open ClosureAnalysis
 open CL.Typedtree
 open CL.Types
+module StringSet = Set.Make (String)
 
-module StringSet = Set.Make(String)
+let rec ids_in_pat (pat : pattern) =
+  match pat.pat_desc with
+  | Tpat_any | Tpat_constant _ -> []
+  | Tpat_var (x, l) -> [(x, l.loc)]
+  | Tpat_alias (p, x, l) -> ids_in_pat p @ [(x, l.loc)]
+  | Tpat_tuple pats -> pats |> List.map ids_in_pat |> List.flatten
+  | Tpat_construct (_, _, pats) -> pats |> List.map ids_in_pat |> List.flatten
+  | Tpat_variant (_, None, _) -> []
+  | Tpat_variant (_, Some p, _) -> ids_in_pat p
+  | Tpat_record (fields, _) ->
+    fields |> List.map (fun (_, _, p) -> ids_in_pat p) |> List.flatten
+  | Tpat_array pats -> pats |> List.map ids_in_pat |> List.flatten
+  | Tpat_lazy p -> ids_in_pat p
+  | Tpat_or (lhs, rhs, _) -> ids_in_pat lhs @ ids_in_pat rhs
 
 type cmt_structure = {modname : string; structure : structure; label : Label.t}
 
@@ -23,6 +37,8 @@ let annotatedAsLive attributes =
   attributes
   |> Annotation.getAttributePayload (( = ) DeadCommon.liveAnnotation)
   <> None
+
+type value = V_Expr of Label.t | V_Id of Id.t
 
 module ValueDependency = struct
   type func = Live.t -> Live.t
@@ -59,6 +75,7 @@ let addEdge v1 v2 f =
   (*   PrintSE.print_se v1; *)
   (*   prerr_newline (); *)
   (*   PrintSE.print_se v2; *)
+  (*   prerr_newline (); *)
   (* prerr_endline "================================"; *)
   let d1 = getDeps v1 in
   let d2 = getDeps v2 in
@@ -135,17 +152,16 @@ module ValueDependencyAnalysis = struct
 
   let rec collectPath se (path : CL.Path.t) f =
     match path with
-    | Pident id -> addEdge se (Id (Id.create !Current.cmtModName id)) f
+    | Pident id -> addEdge se (Id (Id.create id)) f
     | Pdot (p', fld, _) ->
       collectPath se p' (f >> fun l -> Func.ctor (Member fld) [l])
     | Papply _ -> failwith "I don't know what Papply do"
 
-  let rec collectBind cmtModName pat se (f : Live.t -> Live.t) =
-    let collectBind = collectBind cmtModName in
+  let rec collectBind pat se (f : Live.t -> Live.t) =
     match pat.pat_desc with
-    | Tpat_var (id, _) -> addEdge (Id (Id.create cmtModName id)) se f
+    | Tpat_var (id, _) -> addEdge (Id (Id.create id)) se f
     | Tpat_alias (pat, id, _) ->
-      addEdge (Id (Id.create cmtModName id)) se f;
+      addEdge (Id (Id.create id)) se f;
       collectBind pat se f
     | Tpat_tuple pats ->
       pats
@@ -187,14 +203,11 @@ module ValueDependencyAnalysis = struct
     | Texp_function {cases} ->
       lookup_sc (expr e)
       |> SESet.iter (function
-           | Fn (param, bodies) ->
+           | Fn (param, _) ->
              cases
              |> List.iter (fun case ->
-                    collectBind !Current.cmtModName case.c_lhs (Var (Val param))
-                      Func.id);
-             bodies
-             |> List.iter (fun body ->
-                    addEdge (expr e) (Var (Val body)) Func.body);
+                    collectBind case.c_lhs (Var (Val param)) Func.id;
+                    addEdge (expr e) (expr case.c_rhs) Func.body);
              lookup_sc (Var (Val param))
              |> SESet.iter (function
                   | Var (Val arg) ->
@@ -239,9 +252,7 @@ module ValueDependencyAnalysis = struct
         |> List.map (fun case -> Live.controlledByPat case.c_lhs)
         |> List.fold_left Live.join Live.Bot
       in
-      cases
-      |> List.iter (fun case ->
-             collectBind !Current.cmtModName case.c_lhs (expr exp) Func.id);
+      cases |> List.iter (fun case -> collectBind case.c_lhs (expr exp) Func.id);
       addEdge (expr e) (expr exp) (Func.ifnotbot cond_base);
       let casesHasSideEffect =
         List.fold_right
@@ -353,10 +364,10 @@ module ValueDependencyAnalysis = struct
       if exp2 |> Label.of_expression |> hasSideEffect then
         addEdge Top (expr exp1) Func.top
     | Texp_for (id, _, exp1, exp2, _, exp3) ->
-      addEdge (Id (Id.create !Current.cmtModName id)) (expr exp1) Func.id;
-      addEdge (Id (Id.create !Current.cmtModName id)) (expr exp2) Func.id;
+      addEdge (Id (Id.create id)) (expr exp1) Func.id;
+      addEdge (Id (Id.create id)) (expr exp2) Func.id;
       if exp3 |> Label.of_expression |> hasSideEffect then
-        addEdge Top (Id (Id.create !Current.cmtModName id)) Func.top
+        addEdge Top (Id (Id.create id)) Func.top
     | Texp_send (exp1, _, Some exp2) ->
       addEdge Top (expr exp1) Func.top;
       addEdge Top (expr exp2) Func.top
@@ -365,63 +376,58 @@ module ValueDependencyAnalysis = struct
     | Texp_send (exp1, _, None) -> addEdge Top (expr exp1) Func.top
     (* addEdge (expr e) (expr exp1) (Func.ifnotbot Live.Top) *)
     | Texp_letmodule (x, _, me, exp) ->
-      addEdge (Id (Id.create !Current.cmtModName x)) (module_expr me) Func.id;
+      addEdge (Id (Id.create x)) (module_expr me) Func.id;
       addEdge (expr e) (expr exp) Func.id
     | _ -> ()
 
-  let rec pattern_fold_id_right f (pat : pattern) acc =
-    let recurse = pattern_fold_id_right f in
-    match pat.pat_desc with
-    | Tpat_any | Tpat_constant _ -> acc
-    | Tpat_var (x, _) -> acc |> f x
-    | Tpat_alias (p, x, _) -> acc |> f x |> recurse p
-    | Tpat_tuple pats -> acc |> List.fold_right recurse pats
-    | Tpat_construct (_, _, pats) -> acc |> List.fold_right recurse pats
-    | Tpat_variant (_, None, _) -> acc
-    | Tpat_variant (_, Some p, _) -> acc |> recurse p
-    | Tpat_record (fields, _) ->
-      acc |> List.fold_right (fun (_, _, pat) -> recurse pat) fields
-    | Tpat_array pats -> acc |> List.fold_right recurse pats
-    | Tpat_lazy p -> acc |> recurse p
-    | Tpat_or (lhs, rhs, _) -> acc |> recurse rhs |> recurse lhs
-
-  let iter_id_in_pat f pat = pattern_fold_id_right (fun p () -> f p) pat ()
-
-  let bindings_of_pat (pat : pattern) =
-    pattern_fold_id_right List.cons pat []
+  let iter_id_in_pat f pat = ids_in_pat pat |> List.iter (fun (id, _) -> f id)
+  let bindings_of_pat (pat : pattern) = ids_in_pat pat |> List.map fst
 
   let collectStructItem se str_item members =
     let processMember id members =
       let name = id |> CL.Ident.name in
       if members |> StringSet.mem name then
-        addEdge se (Id (Id.create !Current.cmtModName id)) (Func.member name);
+        addEdge se (Id (Id.create id)) (Func.member name);
       members |> StringSet.remove name
     in
     match str_item.str_desc with
     | Tstr_eval _ -> members
     | Tstr_value (_, vbs) ->
-      let bindings = vbs |> List.map (fun vb -> bindings_of_pat vb.vb_pat) |> List.flatten in
-      List.fold_right (processMember) bindings members
+      let bindings =
+        vbs |> List.map (fun vb -> bindings_of_pat vb.vb_pat) |> List.flatten
+      in
+      List.fold_right processMember bindings members
     | Tstr_module mb -> processMember mb.mb_id members
-    | Tstr_recmodule mbs -> members |> List.fold_right (fun mb -> processMember mb.mb_id) mbs
+    | Tstr_recmodule mbs ->
+      members |> List.fold_right (fun mb -> processMember mb.mb_id) mbs
     | Tstr_include {incl_mod; incl_type} ->
       let get_member_opt = function
         | Sig_value (x, _) | Sig_module (x, _, _) -> Some (CL.Ident.name x)
         | _ -> None
       in
-      let exported = incl_type |> List.filter_map get_member_opt |> List.filter (fun name -> members |> StringSet.mem name) in
-      let fn = fun x -> List.fold_right (fun name -> Live.join (Func.member name x)) exported Live.Bot in
+      let exported =
+        incl_type
+        |> List.filter_map get_member_opt
+        |> List.filter (fun name -> members |> StringSet.mem name)
+      in
+      let fn x =
+        List.fold_right
+          (fun name -> Live.join (Func.member name x))
+          exported Live.Bot
+      in
       addEdge se (module_expr incl_mod) fn;
       StringSet.diff members (StringSet.of_list exported)
     | Tstr_primitive vd -> processMember vd.val_id members
     | _ -> members
 
   let collectStruct se str =
-      let get_member_opt = function
-        | Sig_value (x, _) | Sig_module (x, _, _) -> Some (CL.Ident.name x)
-        | _ -> None
-      in
-    let members = str.str_type |> List.filter_map get_member_opt |> StringSet.of_list in
+    let get_member_opt = function
+      | Sig_value (x, _) | Sig_module (x, _, _) -> Some (CL.Ident.name x)
+      | _ -> None
+    in
+    let members =
+      str.str_type |> List.filter_map get_member_opt |> StringSet.of_list
+    in
     List.fold_right (collectStructItem se) str.str_items members
 
   let collectModuleExpr (me : module_expr) =
@@ -432,9 +438,7 @@ module ValueDependencyAnalysis = struct
       lookup_sc (module_expr me)
       |> SESet.iter (function
            | Fn (param, _) ->
-             addEdge
-               (Id (Id.create !Current.cmtModName x))
-               (Var (Val param)) Func.id;
+             addEdge (Id (Id.create x)) (Var (Val param)) Func.id;
              lookup_sc (Var (Val param))
              |> SESet.iter (function
                   | Var (Val arg) ->
@@ -465,17 +469,14 @@ module ValueDependencyAnalysis = struct
   let collectMapper =
     let super = CL.Tast_mapper.default in
     let value_binding self vb =
-      collectBind !Current.cmtModName vb.vb_pat (expr vb.vb_expr) Func.id;
+      collectBind vb.vb_pat (expr vb.vb_expr) Func.id;
       if vb.vb_attributes |> annotatedAsLive then
         vb.vb_pat
-        |> iter_id_in_pat (fun id ->
-               addEdge Top (Id (Id.create !Current.cmtModName id)) Func.top);
+        |> iter_id_in_pat (fun id -> addEdge Top (Id (Id.create id)) Func.top);
       super.value_binding self vb
     in
     let module_binding self mb =
-      addEdge
-        (Id (Id.create !Current.cmtModName mb.mb_id))
-        (module_expr mb.mb_expr) Func.id;
+      addEdge (Id (Id.create mb.mb_id)) (module_expr mb.mb_expr) Func.id;
       super.module_binding self mb
     in
     let expr self e =
@@ -587,15 +588,36 @@ let traverse_ast =
 
 let preprocess =
   let super = CL.Tast_mapper.default in
+  let pat self p =
+    ids_in_pat p
+    |> List.iter (fun (id, loc) -> Id.preprocess (Id.create id) loc);
+    super.pat self p
+  in
+  let module_binding self mb =
+    Id.preprocess (Id.create mb.mb_id) mb.mb_name.loc;
+    super.module_binding self mb
+  in
+  let value_description self vd =
+    Id.preprocess (Id.create vd.val_id) vd.val_name.loc;
+    super.value_description self vd
+  in
   let expr self e =
+    (match e.exp_desc with
+    | Texp_for (x, ppat, _, _, _, _) ->
+      Id.preprocess (Id.create x) ppat.ppat_loc
+    | Texp_letmodule (x, l, _, _) -> Id.preprocess (Id.create x) l.loc
+    | _ -> ());
     let e' = Label.preprocess_expression e in
     super.expr self e'
   in
   let module_expr self me =
+    (match me.mod_desc with
+    | Tmod_functor (x, l, _, _) -> Id.preprocess (Id.create x) l.loc
+    | _ -> ());
     let me' = Label.preprocess_module_expr me in
     super.module_expr self me'
   in
-  {super with expr; module_expr}
+  {super with pat; module_binding; value_description; expr; module_expr}
 
 let cmtStructures : cmt_structure list ref = ref []
 
@@ -615,7 +637,6 @@ let processCmtStructure modname (structure : CL.Typedtree.structure) =
 
 let processCmt (cmt_infos : CL.Cmt_format.cmt_infos) =
   Current.cmtModName := cmt_infos.cmt_modname;
-  (* let moduleId = Id.createCmtModuleId !Current.cmtModName in *)
   match cmt_infos.cmt_annots with
   | Interface _ -> ()
   | Implementation structure ->
@@ -632,10 +653,10 @@ let rec collectDeadPattern addDeadValue pat =
   match pat.pat_desc with
   | Tpat_any -> ()
   | Tpat_var (id, _) ->
-    let se = Id (Id.create !Current.cmtModName id) in
+    let se = Id (Id.create id) in
     if se |> isDeadValue then addDeadValue se
   | Tpat_alias (p, id, _) ->
-    let se = Id (Id.create !Current.cmtModName id) in
+    let se = Id (Id.create id) in
     if se |> isDeadValue then addDeadValue se;
     recurse p
   | Tpat_constant _ -> ()
@@ -668,11 +689,12 @@ let collectDeadValuesMapper addDeadValue =
     else super.expr self e
   in
   let module_expr self me =
-    let label = me |> Label.of_module_expr in
-    if label |> isDeadExpr then (
-      addDeadExpr label;
-      me)
-    else super.module_expr self me
+    (* let label = me |> Label.of_module_expr in *)
+    (* if label |> isDeadExpr then ( *)
+    (*   addDeadExpr label; *)
+    (*   me) *)
+    (* else *)
+    super.module_expr self me
   in
 
   {super with expr; module_expr; pat}
@@ -706,21 +728,32 @@ let reportDead ~ppf =
   let deads = collectDeadValues !cmtStructures in
   deads
   |> SESet.iter (fun se ->
-         PrintSE.print_se se;
-         (match se with
+         match se with
          | Var (Val label) -> (
            match label |> Label.to_summary with
            | ValueExpr e ->
-             (* Print.print_expression 0 e.exp; *)
-             (* prerr_newline (); *)
-             ()
+             if not e.exp_loc.loc_ghost then (
+               PrintSE.print_se se;
+               prerr_newline ();
+               (* Print.print_expression 0 e.exp; *)
+               (* prerr_newline (); *)
+               ())
            | ModExpr me ->
-             (* Print.print_module_expr 0 me.mod_exp; *)
-             (* prerr_newline (); *)
-             ()
+             if not me.mod_loc.loc_ghost then (
+               PrintSE.print_se se;
+               prerr_newline ();
+               (* Print.print_module_expr 0 me.mod_exp; *)
+               (* prerr_newline (); *)
+               ())
            | _ -> ())
+         | Id id ->
+           if not (Id.to_summary id).id_loc.loc_ghost then (
+             PrintSE.print_se se;
+             prerr_newline ();
+             PrintSE.print_code_loc (Id.to_summary id).id_loc;
+             prerr_newline ();
+             ())
          | _ -> ());
-         prerr_newline ());
   (* print_graph (); *)
   (* PrintSE.print_sc_info (); *)
   (* !cmtStructures |> List.iter (fun cmt_str -> *)

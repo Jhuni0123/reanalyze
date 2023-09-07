@@ -9,10 +9,18 @@ module Id = struct
   (* Then Ident.t with top-level module name is unique for whole codebase. *)
   type t = string * CL.Ident.t
 
+  type summary = {
+    id_loc : CL.Location.t;
+  }
+
+  let to_summary_tbl : (t, summary) Hashtbl.t = Hashtbl.create 10
+  let to_summary id = Hashtbl.find to_summary_tbl id
+
   let createCmtModuleId modname : t =
     ("+", {name = modname; stamp = 0; flags = 0})
 
-  let create ctx ident : t =
+  let create ident : t =
+    let ctx = !Current.cmtModName in
     match CL.Ident.persistent ident with
     | true -> createCmtModuleId (CL.Ident.name ident)
     | false -> (ctx, ident)
@@ -34,10 +42,10 @@ module Id = struct
 
   let print (id : t) =
     Printf.printf "[%s]%s#%d" (ctx id) (name id) (ident id).stamp
-end
 
-module IdTbl = Hashtbl.Make (Id)
-module IdSet = Set.Make (Id)
+  let preprocess id loc =
+    Hashtbl.add to_summary_tbl id { id_loc = loc }
+end
 
 module Label = struct
   type t = string * int
@@ -242,7 +250,6 @@ end
 
 let worklist : Worklist.t = Worklist.create ()
 
-(* let prev_worklist : Worklist.t = ref SEPairSet.empty *)
 let sc : SESet.t SETbl.t = SETbl.create 256
 let reverse_sc : WorkItemSet.t SETbl.t = SETbl.create 256
 
