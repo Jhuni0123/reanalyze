@@ -49,7 +49,7 @@ let value_prim : (CL.Primitive.description * Label.t list) -> SESet.t * SESet.t 
       _ ) ->
     (SESet.empty, SESet.empty)
   | _prim, args ->
-      update_sc AppliedToUnknown (args |> List.map (fun arg -> Var (Val arg)) |> SESet.of_list);
+      update_sc UsedInUnknown (args |> List.map (fun arg -> Var (Val arg)) |> SESet.of_list);
       (SESet.singleton Unknown, SESet.singleton SideEffect)
 
 

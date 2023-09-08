@@ -83,6 +83,8 @@ let se_of_mb (mb : module_binding) =
   ([(mb.mb_id, label)], [Var (SideEff label)])
 
 let se_of_vb (vb : value_binding) =
+  if vb.vb_attributes |> annotatedAsLive then
+    ids_in_pat vb.vb_pat |> List.iter (fun (x, _) -> update_sc UsedInUnknown (SESet.singleton (Id (Id.create x))));
   let bindings = solve_pat vb.vb_pat (Label.of_expression vb.vb_expr) in
   (* let v = bindings |> List.map (fun (name, e) -> Ctor (Member name, [e])) in *)
   let seff = Var (SideEff (Label.of_expression vb.vb_expr)) in
@@ -363,7 +365,7 @@ let reduce_app f args =
            match arg with
            | None -> ()
            | Some label ->
-             update_sc AppliedToUnknown (SESet.singleton (Var (Val label))));
+             update_sc UsedInUnknown (SESet.singleton (Var (Val label))));
     (SESet.singleton Unknown, SESet.singleton SideEffect)
   | Fn (param, bodies) ->
     (SESet.singleton (FnApp (param, bodies, args)), SESet.empty)
@@ -456,7 +458,7 @@ let reduce_seff se =
     PrintSE.print_se se;
     failwith "Invalid side effect se"
 
-let reduce_argument_of_unknown se =
+let reduce_value_used_in_unknown se =
   match se with
   | Var (Val _) | Id _ -> SESet.filter propagate (lookup_sc se)
   | Fn (arg, bodies) ->
@@ -531,11 +533,11 @@ let step_sc_for_entry x =
          | Ctor (Record, l) -> (
            try update_sc (Mem (List.nth l i)) set with _ -> ())
          | _ -> ())
-  | AppliedToUnknown ->
+  | UsedInUnknown ->
     let reduced =
       SESet.fold
         (fun se acc ->
-          let value = reduce_argument_of_unknown se in
+          let value = reduce_value_used_in_unknown se in
           SESet.union value acc)
         set SESet.empty
     in
@@ -561,8 +563,8 @@ let step_sc_for_pair (lhs, rhs) =
            try update_sc (Mem (List.nth l i)) (SESet.singleton rhs)
            with _ -> ())
          | _ -> ())
-  | AppliedToUnknown ->
-    let value = reduce_argument_of_unknown rhs in
+  | UsedInUnknown ->
+    let value = reduce_value_used_in_unknown rhs in
     update_sc lhs value
   | _ -> failwith "Invalid LHS"
 

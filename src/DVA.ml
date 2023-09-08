@@ -4,21 +4,6 @@ open CL.Typedtree
 open CL.Types
 module StringSet = Set.Make (String)
 
-let rec ids_in_pat (pat : pattern) =
-  match pat.pat_desc with
-  | Tpat_any | Tpat_constant _ -> []
-  | Tpat_var (x, l) -> [(x, l.loc)]
-  | Tpat_alias (p, x, l) -> ids_in_pat p @ [(x, l.loc)]
-  | Tpat_tuple pats -> pats |> List.map ids_in_pat |> List.flatten
-  | Tpat_construct (_, _, pats) -> pats |> List.map ids_in_pat |> List.flatten
-  | Tpat_variant (_, None, _) -> []
-  | Tpat_variant (_, Some p, _) -> ids_in_pat p
-  | Tpat_record (fields, _) ->
-    fields |> List.map (fun (_, _, p) -> ids_in_pat p) |> List.flatten
-  | Tpat_array pats -> pats |> List.map ids_in_pat |> List.flatten
-  | Tpat_lazy p -> ids_in_pat p
-  | Tpat_or (lhs, rhs, _) -> ids_in_pat lhs @ ids_in_pat rhs
-
 type cmt_structure = {modname : string; structure : structure; label : Label.t}
 let cmtStructures : cmt_structure list ref = ref []
 
@@ -33,11 +18,6 @@ let rec isEmptyPropsType (t : type_expr) =
   | Tconstr (path, [], _) -> CL.Path.name path = "props"
   | Tlink t -> isEmptyPropsType t
   | _ -> false
-
-let annotatedAsLive attributes =
-  attributes
-  |> Annotation.getAttributePayload (( = ) DeadCommon.liveAnnotation)
-  <> None
 
 type value =
   | Top
@@ -493,9 +473,6 @@ module ValueDependencyAnalysis = struct
     let super = CL.Tast_mapper.default in
     let value_binding self vb =
       collectBind vb.vb_pat (expr vb.vb_expr) Func.id;
-      if vb.vb_attributes |> annotatedAsLive then
-        ids_in_pat vb.vb_pat
-        |> List.iter (fun (x, _) -> addEdge Top (id x) Func.top);
       super.value_binding self vb
     in
     let module_binding self mb =
@@ -563,9 +540,10 @@ module ValueDependencyAnalysis = struct
 
   let collect () =
     !cmtStructures |> List.iter collectCmtModule;
-    lookup_sc AppliedToUnknown
+    lookup_sc UsedInUnknown
     |> SESet.iter (function
          | Var (Val label) -> addEdge Top (V_Expr label) Func.top
+         | Id x -> addEdge Top (V_Id x) Func.top
          | _ -> ())
 
   let solve () =

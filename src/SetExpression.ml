@@ -185,7 +185,7 @@ type se =
   | Fld of Label.t * fld
   (* Side Effect *)
   | SideEffect
-  | AppliedToUnknown
+  | UsedInUnknown
 
 let compare_se a b =
   match (a, b) with Id x, Id y -> Id.compare x y | _ -> compare a b
@@ -250,6 +250,7 @@ end
 let worklist : Worklist.t = Worklist.create ()
 
 let sc : SESet.t SETbl.t = SETbl.create 256
+let _ = SETbl.add sc UsedInUnknown SESet.empty
 let reverse_sc : WorkItemSet.t SETbl.t = SETbl.create 256
 
 let lookup_sc se =
@@ -280,7 +281,7 @@ let update_reverse (key, elt) =
       add_reverse (Var (Val e)) (WorkPair (key, elt))
     | _ -> ())
   | Fld (e, _) -> add_reverse (Var (Val e)) (WorkPair (key, elt))
-  | AppliedToUnknown -> add_reverse elt (WorkPair (key, elt))
+  | UsedInUnknown -> add_reverse elt (WorkPair (key, elt))
   | _ -> failwith "Invalid LHS"
 
 let get_workitems (key, elt) =
@@ -305,3 +306,23 @@ let update_sc lhs added =
   if not (SESet.is_empty diff) then (
     diff |> SESet.iter (fun rhs -> worklist |> Worklist.push (lhs, rhs));
     SETbl.replace sc lhs (SESet.union original diff))
+
+let annotatedAsLive attributes =
+  attributes
+  |> Annotation.getAttributePayload (( = ) DeadCommon.liveAnnotation)
+  <> None
+
+let rec ids_in_pat (pat : pattern) =
+  match pat.pat_desc with
+  | Tpat_any | Tpat_constant _ -> []
+  | Tpat_var (x, l) -> [(x, l.loc)]
+  | Tpat_alias (p, x, l) -> ids_in_pat p @ [(x, l.loc)]
+  | Tpat_tuple pats -> pats |> List.map ids_in_pat |> List.flatten
+  | Tpat_construct (_, _, pats) -> pats |> List.map ids_in_pat |> List.flatten
+  | Tpat_variant (_, None, _) -> []
+  | Tpat_variant (_, Some p, _) -> ids_in_pat p
+  | Tpat_record (fields, _) ->
+    fields |> List.map (fun (_, _, p) -> ids_in_pat p) |> List.flatten
+  | Tpat_array pats -> pats |> List.map ids_in_pat |> List.flatten
+  | Tpat_lazy p -> ids_in_pat p
+  | Tpat_or (lhs, rhs, _) -> ids_in_pat lhs @ ids_in_pat rhs

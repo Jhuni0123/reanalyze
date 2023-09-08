@@ -122,7 +122,7 @@ let rec print_se : se -> unit = function
   | Mem (ctx, i) -> prerr_string ("!ℓ_" ^ ctx ^ "_" ^ string_of_int i)
   | Id x -> prerr_string (x |> Id.to_string)
   | SideEffect -> prerr_string "φ"
-  | AppliedToUnknown -> prerr_string "AoU"
+  | UsedInUnknown -> prerr_string "AoU"
 
 and print_ses (xs : se list) =
   prerr_string "[";
