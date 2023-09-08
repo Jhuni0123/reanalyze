@@ -41,7 +41,7 @@ let print_ident (id: CL.Ident.t) =
 let rec print_pattern pat =
     match pat.pat_desc with
     | Tpat_any -> ps "_"
-    | Tpat_var (id, loc) -> print_ident id; ps "@"; print_loc loc.loc
+    | Tpat_var (id, loc) -> print_ident id
     | Tpat_alias (pat, id, loc) -> print_pattern pat; ps " as "; print_ident id
     | Tpat_constant _ -> ps "Tpat_constant"
     | Tpat_tuple (pats) ->
@@ -62,10 +62,10 @@ let rec print_pattern pat =
         ps "}"
 
 and print_value_binding i (vb: CL.Typedtree.value_binding) =
-    ps "[";
-    let live = (vb.vb_attributes |> Annotation.getAttributePayload ((=) DeadCommon.liveAnnotation)) <> None in
-    if live then ps "@live";
-    ps "]";
+    (* ps "["; *)
+    (* let live = (vb.vb_attributes |> Annotation.getAttributePayload ((=) DeadCommon.liveAnnotation)) <> None in *)
+    (* if live then ps "@live"; *)
+    (* ps "]"; *)
     print_pattern vb.vb_pat;
     pe " =";
     pi i;
@@ -88,7 +88,6 @@ and print_path (p: CL.Path.t) =
     | Papply (p1, p2) -> print_path p1; ps "("; print_path p2; ps ")";
 
 and print_module_expr i me =
-  prerr_int me.mod_loc.loc_start.pos_lnum; ps ",";
   (match me.mod_desc with
   | Tmod_ident (path, lid) ->
       ps "Tmod_ident "; print_path path; print_lident lid.txt; print_newline ()
@@ -96,7 +95,7 @@ and print_module_expr i me =
       pe "Tmod_structure(";
       (* s.str_type |> List.iter (print_signature_item (i+1)); *)
       print_structure (i+1) s;
-      pe ")";
+      pi i; pe ")";
   | Tmod_functor _ ->
       pe "Tmod_functor()"
   | Tmod_apply (me1, me2, mc) ->
@@ -106,7 +105,7 @@ and print_module_expr i me =
       pe ")";
   | Tmod_constraint (me', _, _, _) ->
       pe "Tmod_constraint(";
-      print_module_expr (i+1) me';
+      pi (i+1); print_module_expr (i+1) me';
       pe ")"
   | Tmod_unpack _ ->
       pe "Tmod_unpack"
@@ -164,11 +163,11 @@ and print_expression i ?(p = false) (expr: CL.Typedtree.expression) =
                 );
                 match eo with
                 | None -> ps "-"
-                | Some e -> print_expressionp 0 e
+                | Some e -> print_expressionp i e
                 ) " "
     | Texp_match (exp, cases, exc_cases, partial) ->
         ps "match";
-        cases |> List.iter (fun case -> pn();print_pattern case.c_lhs; print_expression i case.c_rhs)
+        cases |> List.iter (fun case -> pn ();pi i; ps "| "; print_pattern case.c_lhs; pe " ->"; pi (i+1);print_expression (i+1) case.c_rhs)
     | Texp_try (exp, cases) -> ps "try"
     | Texp_tuple (exps) -> ()
     | Texp_construct (lid, cons_desc, exps) ->
@@ -266,8 +265,8 @@ and print_structure_item i (structure_item: CL.Typedtree.structure_item) =
     | Tstr_value (rec_flag, vbs) ->
             pe "# Structure - value binding";
             psi i "let ";
-            psi i (str_rec_flag rec_flag);
-            vbs |> List.iter (print_value_binding i);
+            ps (str_rec_flag rec_flag);
+            vbs |> List.iter (print_value_binding (i+1));
             pn ()
     | Tstr_primitive vd ->
         pe "# Structure - primitive";
@@ -281,7 +280,7 @@ and print_structure_item i (structure_item: CL.Typedtree.structure_item) =
         pe "# Structure - exception"
     | Tstr_module m ->
         pe "# Structure - module";
-        pe m.mb_name.txt;
+        ps @@ "module " ^ m.mb_name.txt ^ " = ";
         print_module_expr i m.mb_expr;
     | Tstr_recmodule _ ->
         pe "# Structure - recmodule"
@@ -307,7 +306,7 @@ and print_module_type (mt: module_type) =
       signature |> List.iter print_signature_item
   | _ -> ()
 
-and print_structure i structure = structure.str_items |> List.iter (pi i; print_structure_item i)
+and print_structure i structure = structure.str_items |> List.iter (fun item -> pi i; print_structure_item i item)
 
 and print_signature_item signature_item =
   match signature_item with
