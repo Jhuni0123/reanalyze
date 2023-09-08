@@ -20,6 +20,7 @@ let rec ids_in_pat (pat : pattern) =
   | Tpat_or (lhs, rhs, _) -> ids_in_pat lhs @ ids_in_pat rhs
 
 type cmt_structure = {modname : string; structure : structure; label : Label.t}
+let cmtStructures : cmt_structure list ref = ref []
 
 let rec isUnitType (t : type_expr) =
   match t.desc with
@@ -47,7 +48,6 @@ type value =
 let expr e = V_Expr (Label.of_expression e)
 let module_expr me = V_Expr (Label.of_module_expr me)
 let id x = V_Id (Id.create x)
-
 
 let compare_value a b =
   match (a, b) with V_Id x, V_Id y -> Id.compare x y | _ -> compare a b
@@ -119,15 +119,13 @@ let addEdge v1 v2 f =
 let hasSideEffect label =
   lookup_sc (Var (SideEff label)) |> SESet.mem SideEffect
 
-let joinLive v live =
+let updateLive v live =
   match Hashtbl.find_opt liveness v with
   | None -> Hashtbl.add liveness v live
-  | Some l -> Hashtbl.replace liveness v (Live.join l live)
+  | Some _ -> Hashtbl.replace liveness v live
 
 let meetLive v live =
-  match Hashtbl.find_opt liveness v with
-  | None -> Hashtbl.add liveness v live
-  | Some l -> Hashtbl.replace liveness v (Live.meet l live)
+  updateLive v (Live.meet (getLive v) live)
 
 module ValueDependencyAnalysis = struct
   let ( >> ) f g x = g (f x)
@@ -408,9 +406,6 @@ module ValueDependencyAnalysis = struct
       addEdge (expr e) (expr exp) Func.id
     | _ -> ()
 
-  let iter_id_in_pat f pat = ids_in_pat pat |> List.iter (fun (id, _) -> f id)
-  let bindings_of_pat (pat : pattern) = ids_in_pat pat |> List.map fst
-
   let collectStructItem v str_item members =
     let processMember x members =
       let name = x |> CL.Ident.name in
@@ -422,7 +417,7 @@ module ValueDependencyAnalysis = struct
     | Tstr_eval _ -> members
     | Tstr_value (_, vbs) ->
       let bindings =
-        vbs |> List.map (fun vb -> bindings_of_pat vb.vb_pat) |> List.flatten
+        vbs |> List.map (fun vb -> ids_in_pat vb.vb_pat) |> List.flatten |> List.map fst
       in
       List.fold_right processMember bindings members
     | Tstr_module mb -> processMember mb.mb_id members
@@ -499,8 +494,8 @@ module ValueDependencyAnalysis = struct
     let value_binding self vb =
       collectBind vb.vb_pat (expr vb.vb_expr) Func.id;
       if vb.vb_attributes |> annotatedAsLive then
-        vb.vb_pat
-        |> iter_id_in_pat (fun x -> addEdge Top (id x) Func.top);
+        ids_in_pat vb.vb_pat
+        |> List.iter (fun (x, _) -> addEdge Top (id x) Func.top);
       super.value_binding self vb
     in
     let module_binding self mb =
@@ -557,7 +552,7 @@ module ValueDependencyAnalysis = struct
     |> Seq.iter (fun node -> if getnum node = 0 then dfs node |> ignore);
     scc |> Stack.to_seq |> List.of_seq
 
-  let collect cmtMod =
+  let collectCmtModule cmtMod =
     Current.cmtModName := cmtMod.modname;
     addEdge
       (V_Id (Id.createCmtModuleId cmtMod.modname))
@@ -566,11 +561,14 @@ module ValueDependencyAnalysis = struct
     collectMapper.structure collectMapper cmtMod.structure |> ignore;
     ()
 
-  let solve () =
+  let collect () =
+    !cmtStructures |> List.iter collectCmtModule;
     lookup_sc AppliedToUnknown
     |> SESet.iter (function
          | Var (Val label) -> addEdge Top (V_Expr label) Func.top
-         | _ -> ());
+         | _ -> ())
+
+  let solve () =
     let dag = scc () in
     let dependentsLives node =
       let dependents = (getDeps node).rev_adj in
@@ -579,19 +577,11 @@ module ValueDependencyAnalysis = struct
            (fun acc (dep, f) -> dep |> getLive |> f |> Live.join acc)
            Live.Bot
     in
-    (* prerr_endline "============ SCC Order ============="; *)
     dag
     |> List.iter (fun nodes ->
-           (* prerr_int (nodes |> List.length); *)
-           (* prerr_newline (); *)
-           (* nodes |> List.iter (fun node -> PrintSE.print_se node; prerr_newline ()); *)
            match nodes with
            | [] -> raise (RuntimeError "Empty SCC")
-           | [node] ->
-             (* Value.print node; *)
-             joinLive node (dependentsLives node)
            | _ ->
-             nodes |> List.iter (fun node -> joinLive node Live.Top);
              for i = 1 to 5 do
                nodes
                |> List.iter (fun node -> meetLive node (dependentsLives node))
@@ -647,8 +637,6 @@ let preprocess =
   in
   {super with pat; module_binding; value_description; expr; module_expr}
 
-let cmtStructures : cmt_structure list ref = ref []
-
 let processCmtStructure modname (structure : CL.Typedtree.structure) =
   let structure = structure |> preprocess.structure preprocess in
   (* prerr_endline "processCmtStructure"; *)
@@ -703,7 +691,6 @@ let collectDeadValuesMapper addDeadValue =
     (* else *)
     super.module_expr self me
   in
-
   {super with expr; module_expr; pat}
 
 let collectDeadValues cmts =
@@ -717,19 +704,16 @@ let collectDeadValues cmts =
          else (
            Current.cmtModName := modname;
            mapper.structure mapper structure |> ignore));
-  (* ValueAnalysis.tbl *)
-  (* |> Hashtbl.iter (fun vm _ -> *)
-  (*        match vm with *)
-  (*        | V_Name name -> *)
-  (*          if (ValueAnalysis.get vm).liveness = Live.Bot then *)
-  (*            deads := !deads |> ValueSet.add vm *)
-  (*        | _ -> ()); *)
   !deads
 
 let reportDead ~ppf =
-  solve ();
-  !cmtStructures |> List.iter ValueDependencyAnalysis.collect;
+  Log_.item "Solving Set-Closure@.";
+  ClosureAnalysis.solve ();
+  Log_.item "Collecting Dependencies@.";
+  ValueDependencyAnalysis.collect ();
+  Log_.item "Solving Dependencies@.";
   ValueDependencyAnalysis.solve ();
+  Log_.item "Done.@.";
   PrintSE.print_sc_info ();
   prerr_endline "============ Dead Values =============";
   let deads = collectDeadValues !cmtStructures in

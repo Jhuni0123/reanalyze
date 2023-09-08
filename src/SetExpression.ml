@@ -170,7 +170,6 @@ type fld = ctor * int option
 type case = {pat : pattern; guard : var option; expr : var}
 
 type se =
-  | Top
   (* Set variable *)
   | Var of var
   | Id of Id.t

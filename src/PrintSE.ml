@@ -65,7 +65,6 @@ let print_arg = function
   | Some a -> print_summary a
 
 let rec print_se : se -> unit = function
-  | Top -> prerr_string "⊤"
   | Unknown -> prerr_string "Unknown"
   | Fn (p, list) ->
     prerr_string "λ";
