@@ -1,3 +1,4 @@
+open Common
 open SetExpression
 open ClosureAnalysis
 open CL.Typedtree
@@ -38,17 +39,6 @@ module ValueSet = Set.Make (struct
   let compare = compare_value
 end)
 
-let print_value = function
-  | Top -> prerr_string "⊤"
-  | V_Expr label -> prerr_string "Expr("; PrintSE.print_summary label; prerr_string ")"
-  | V_Id id ->
-      let summary = Id.to_summary id in
-      prerr_string "Id(";
-      prerr_string @@ Id.to_string id ^ " @ ";
-      PrintSE.print_code_loc summary.id_loc;
-      prerr_string ")"
-  | V_Mem (ctx, i) -> prerr_string "Mem("; prerr_string @@ ctx ^ ", " ^ string_of_int i; prerr_string ")"
-
 module ValueDependency = struct
   type func = Live.t -> Live.t
   type t = {mutable adj : (value * func) list; mutable rev_adj : (value * func) list}
@@ -71,26 +61,7 @@ let getDeps v =
     Hashtbl.add graph v deps;
     deps
 
-let print_graph () =
-  prerr_endline "============= Graph =============";
-  graph
-  |> Hashtbl.iter (fun v1 (vd : ValueDependency.t) ->
-         vd.adj
-         |> List.iter (fun (v2, fn) ->
-                print_value v1;
-                prerr_string " --> ";
-                print_value v2;
-                prerr_newline ();
-                PrintSE.print_live (fn Live.Top);
-                prerr_newline ()))
-
 let addEdge v1 v2 f =
-  (* prerr_endline "@@@@@@@@@@@@ addEdge @@@@@@@@@@@"; *)
-  (*   PrintSE.print_se v1; *)
-  (*   prerr_newline (); *)
-  (*   PrintSE.print_se v2; *)
-  (*   prerr_newline (); *)
-  (* prerr_endline "================================"; *)
   let d1 = getDeps v1 in
   let d2 = getDeps v2 in
   d1.adj <- (v2, f) :: d1.adj;
@@ -617,10 +588,6 @@ let preprocess =
 
 let processCmtStructure modname (structure : CL.Typedtree.structure) =
   let structure = structure |> preprocess.structure preprocess in
-  (* prerr_endline "processCmtStructure"; *)
-  (* prerr_endline modname; *)
-  (* Print.print_structure 0 structure; *)
-  (* prerr_newline (); *)
   structure |> traverse_ast.structure traverse_ast |> ignore;
   let label = Label.new_cmt_module modname in
   let v, seff = se_of_struct structure in
@@ -684,46 +651,88 @@ let collectDeadValues cmts =
            mapper.structure mapper structure |> ignore));
   !deads
 
+module FileLocationPrinter = struct
+  type line = string
+
+  let currentFile = ref ""
+
+  let currentFileLines = (ref [||] : line array ref)
+
+  let readFile fileName =
+    let channel = open_in fileName in
+    let lines = ref [] in
+    let rec loop () =
+      let line = input_line channel in
+      lines := line :: !lines;
+      loop ()
+      [@@raises End_of_file]
+    in
+    try loop ()
+    with End_of_file ->
+      close_in_noerr channel;
+      !lines |> List.rev |> Array.of_list
+
+  let writeFile fileName lines =
+    if fileName <> "" && !Common.Cli.write then (
+      let channel = open_out fileName in
+      let lastLine = Array.length lines in
+      lines
+      |> Array.iteri (fun n line ->
+             output_string channel line;
+             if n < lastLine - 1 then output_char channel '\n');
+      close_out_noerr channel)
+
+  let print ~ppf (loc: CL.Location.t) =
+    let (fileName, lineNumber, startIndex) = CL.Location.get_pos_info loc.loc_start in
+    if Sys.file_exists fileName then (
+      if fileName <> !currentFile then (
+        writeFile !currentFile !currentFileLines;
+        currentFile := fileName;
+        currentFileLines := readFile fileName);
+      match !currentFileLines.(lineNumber-1) with
+      | line -> (
+        let endIndex = loc.loc_end.pos_cnum - loc.loc_start.pos_cnum + startIndex in
+        let underline = line |> String.mapi (fun i _ -> if startIndex <= i && i < endIndex then '-' else ' ') in
+        let continue = if line |> String.length < endIndex then " (continued...)" else "" in
+        Format.fprintf ppf "  <-- line %d@.  %s@.  %s@." loc.loc_start.pos_lnum line (underline ^ continue)
+      )
+      | exception Invalid_argument _ ->
+        Format.fprintf ppf "  <-- Can't find line %d@." loc.loc_start.pos_lnum)
+    else Format.fprintf ppf "  <-- Can't find file@."
+end
+
+let warnning ~ppf ~(loc : CL.Location.t) message =
+  if Suppress.filter loc.loc_start then (
+    let open Log_ in
+    let name = "Warning Dead Value" in
+    let body ppf () = Format.fprintf ppf "%s" message in
+    Stats.count name;
+    Format.fprintf ppf "@[<v 2>@,%a@,%a@,%a@]@." Color.info name Loc.print loc
+      body ())
+
+let report v ~ppf =
+  print_string (Format.flush_str_formatter ());
+  match v with
+  | V_Expr label -> (
+    match label |> Label.to_summary with
+    | ValueExpr e ->
+      if not e.exp_loc.loc_ghost then (
+         warnning ~ppf ~loc:e.exp_loc "the expression is evaluated to useless value and has no side effect";
+         FileLocationPrinter.print ~ppf e.exp_loc)
+    | _ -> ())
+  | V_Id id ->
+    let summary = Id.to_summary id in
+    if not summary.id_loc.loc_ghost then (
+      warnning ~ppf ~loc:summary.id_loc "The variable always has useless value";
+      FileLocationPrinter.print ~ppf summary.id_loc)
+  | _ -> ()
+
 let reportDead ~ppf =
-  Log_.item "Solving Set-Closure@.";
+  if !Cli.debug then Log_.item "Solving Set-Closure@.";
   ClosureAnalysis.solve ();
-  Log_.item "Collecting Dependencies@.";
+  if !Cli.debug then Log_.item "Collecting Dependencies@.";
   ValueDependencyAnalysis.collect ();
-  Log_.item "Solving Dependencies@.";
+  if !Cli.debug then Log_.item "Solving Dependencies@.";
   ValueDependencyAnalysis.solve ();
-  Log_.item "Done.@.";
-  PrintSE.print_sc_info ();
-  prerr_endline "============ Dead Values =============";
-  let deads = collectDeadValues !cmtStructures in
-  deads
-  |> ValueSet.iter (fun v ->
-         match v with
-         | V_Expr label -> (
-           match label |> Label.to_summary with
-           | ValueExpr e ->
-             if not e.exp_loc.loc_ghost then (
-               print_value v;
-               prerr_newline ();
-               (* Print.print_expression 0 e.exp; *)
-               (* prerr_newline (); *)
-               ())
-           | ModExpr me ->
-             if not me.mod_loc.loc_ghost then (
-               print_value v;
-               prerr_newline ();
-               (* Print.print_module_expr 0 me.mod_exp; *)
-               (* prerr_newline (); *)
-               ())
-           | _ -> ())
-         | V_Id id ->
-           if not (Id.to_summary id).id_loc.loc_ghost then (
-             print_value v;
-             prerr_newline ();
-             ())
-         | _ -> ());
-  (* print_graph (); *)
-  (* PrintSE.print_sc_info (); *)
-  (* !cmtStructures |> List.iter (fun cmt_str -> *)
-  (*   Print.print_structure cmt_str.structure; *)
-  (* ); *)
-  ()
+  if !Cli.debug then Log_.item "Done.@.";
+  collectDeadValues !cmtStructures |> ValueSet.iter (fun v -> report v ~ppf)
