@@ -159,30 +159,31 @@ module FileLocationPrinter = struct
     else Format.fprintf ppf "  <-- Can't find file@."
 end
 
-let warnning ~ppf ~(loc : CL.Location.t) message =
+let warning ~ppf ~(loc : CL.Location.t) name message =
   if Suppress.filter loc.loc_start then (
     let open Log_ in
-    let name = "Warning Dead Value" in
     let body ppf () = Format.fprintf ppf "%s" message in
     Stats.count name;
     Format.fprintf ppf "@[<v 2>@,%a@,%a@,%a@]@." Color.info name Loc.print loc
-      body ())
+      body ());
+    FileLocationPrinter.print ~ppf loc
 
 let report v ~ppf =
-  print_string (Format.flush_str_formatter ());
   match v with
   | V_Expr label -> (
     match label |> Label.to_summary with
     | ValueExpr e ->
       if not e.exp_loc.loc_ghost then (
-         warnning ~ppf ~loc:e.exp_loc "the expression is evaluated to useless value and has no side effect";
-         FileLocationPrinter.print ~ppf e.exp_loc)
+        let name = "Warning Dead Expression" in
+        let message = "This expression is evaluated as useless value and has no side effect" in
+        warning ~ppf ~loc:e.exp_loc name message)
     | _ -> ())
   | V_Id id ->
     let summary = Id.to_summary id in
     if not summary.id_loc.loc_ghost then (
-      warnning ~ppf ~loc:summary.id_loc "The variable always has useless value";
-      FileLocationPrinter.print ~ppf summary.id_loc)
+      let name = "Warning Dead Variable" in
+      let message = "This variable always has useless value" in
+      warning ~ppf ~loc:summary.id_loc name message)
   | _ -> ()
 
 let reportDead ~ppf =

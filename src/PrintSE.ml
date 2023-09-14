@@ -1,5 +1,5 @@
 open DVACommon
-open ClosureAnalysis
+open Closure
 
 module Loc = struct
   type t = var
@@ -203,6 +203,10 @@ let show_sc_tbl (tbl : SESet.t SETbl.t) =
         | _ -> prerr_string " = ");
         prerr_newline ();
         show_se_with_separator data "\t";
+        (match key with
+        | Var (Val l) -> ValueDependency.getLive (V_Expr l) |> print_live
+        | Id x -> ValueDependency.getLive (V_Id x) |> print_live
+        | _ -> ());
         (* Live.get key |> print_live; *)
         prerr_newline ();
         prerr_newline ();

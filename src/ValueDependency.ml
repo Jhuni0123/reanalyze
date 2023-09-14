@@ -16,6 +16,9 @@ let updateLive v live =
 let meetLive v live =
   updateLive v (Live.meet (getLive v) live)
 
+let isDeadValue v = v |> getLive = Live.Bot
+let isDeadExpr label =
+   isDeadValue (V_Expr label) && not (label |> Closure.hasSideEffect)
 
 let expr e = V_Expr (Label.of_expression e)
 let module_expr me = V_Expr (Label.of_module_expr me)
@@ -30,6 +33,9 @@ module Func = struct
 
   let ifnotbot l : t =
    fun x -> if Live.equal x Live.Bot then Live.Bot else l
+
+  let ifnotdead (e: Label.t) (f: t) : t =
+   fun x -> if isDeadExpr e then Live.Bot else f x
 
   let iftop l : t =
    fun x -> if Live.equal x Live.Top then l else Live.Bot
@@ -71,19 +77,19 @@ module Func = struct
    fun ls -> Ctor (CtorMap.singleton ctor ls)
 end
 
-module ValueDependency = struct
+module AdjucentList = struct
   type t = {mutable adj : (value * Func.t) list; mutable rev_adj : (value * Func.t) list}
 
   let createEmpty () = {adj = []; rev_adj = []}
 end
 
-let graph : (value, ValueDependency.t) Hashtbl.t = Hashtbl.create 10
+let graph : (value, AdjucentList.t) Hashtbl.t = Hashtbl.create 10
 
 let getDeps v =
   match Hashtbl.find_opt graph v with
   | Some deps -> deps
   | None ->
-    let deps = ValueDependency.createEmpty () in
+    let deps = AdjucentList.createEmpty () in
     Hashtbl.add graph v deps;
     deps
 
@@ -534,5 +540,3 @@ let solve () =
              nodes
              |> List.iter (fun node -> meetLive node (dependentsLives node))
            done)
-
-let isDeadValue v = v |> getLive = Live.Bot
