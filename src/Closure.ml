@@ -1,8 +1,155 @@
-open SetExpression
 open CL.Typedtree
 open CL.Types
+open DVACommon
 
 exception RuntimeError of string
+
+type workitem = WorkPair of se * se | WorkKey of se
+
+module WorkItemSet = Set.Make (struct
+  type t = workitem
+
+  let compare a b =
+    match (a, b) with
+    | WorkKey x, WorkKey y -> compare_se x y
+    | WorkPair (x1, x2), WorkPair (y1, y2) -> compare_se_pair (x1, x2) (y1, y2)
+    | _ -> compare a b
+end)
+
+module Worklist = struct
+  type t = (se * se) Stack.t
+
+  let push = Stack.push
+  let pop = Stack.pop
+  let is_empty = Stack.is_empty
+  let create = Stack.create
+end
+
+let worklist : Worklist.t = Worklist.create ()
+
+let sc : SESet.t SETbl.t = (
+  let tbl = SETbl.create 256 in
+  let _ = SETbl.add tbl UsedInUnknown SESet.empty in
+  tbl
+)
+let reverse_sc : WorkItemSet.t SETbl.t = SETbl.create 256
+
+let lookup_sc se =
+  try SETbl.find sc se with Not_found -> SESet.singleton Unknown
+
+let propagate = function
+  | Unknown | Ctor _ | Prim _ | Fn _ | FnApp (_, _, None :: _) -> true
+  | PrimApp (prim, args) -> front_arg_len args < prim.prim_arity
+  | SideEffect -> true
+  | _ -> false
+
+let add_reverse se workitem =
+  match SETbl.find_opt reverse_sc se with
+  | None -> SETbl.add reverse_sc se (WorkItemSet.singleton workitem)
+  | Some orig -> SETbl.replace reverse_sc se (WorkItemSet.add workitem orig)
+
+let update_reverse (key, elt) =
+  match key with
+  | Mem _ | Id _ | Var _ -> (
+    add_reverse elt (WorkPair (key, elt));
+    match (key, elt) with
+    | Var _, Fld (e, _) | Var _, App (e, Some _ :: _) ->
+      add_reverse (Var (Val e)) (WorkPair (key, elt))
+    | _ -> ())
+  | Fld (e, _) -> add_reverse (Var (Val e)) (WorkPair (key, elt))
+  | UsedInUnknown -> add_reverse elt (WorkPair (key, elt))
+  | _ -> failwith "Invalid LHS"
+
+let get_workitems (key, elt) =
+  let items = WorkItemSet.singleton (WorkPair (key, elt)) in
+  match key with
+  | Mem _ | Id _ | Var _ when propagate elt -> (
+    match SETbl.find_opt reverse_sc key with
+    | Some rev -> WorkItemSet.union rev items
+    | None -> items)
+  | _ -> items
+
+let init_sc lhs data =
+  data |> List.iter (fun rhs -> worklist |> Worklist.push (lhs, rhs));
+  let set = SESet.of_list data in
+  match SETbl.find sc lhs with
+  | exception Not_found -> SETbl.add sc lhs set
+  | original -> SETbl.replace sc lhs (SESet.union original set)
+
+let update_sc lhs added =
+  let original = lookup_sc lhs in
+  let diff = SESet.diff added original in
+  if not (SESet.is_empty diff) then (
+    diff |> SESet.iter (fun rhs -> worklist |> Worklist.push (lhs, rhs));
+    SETbl.replace sc lhs (SESet.union original diff))
+
+
+let address_tbl : (string, int) Hashtbl.t = Hashtbl.create 10
+
+let new_memory mod_name : memory_label =
+  let label =
+    match Hashtbl.find_opt address_tbl mod_name with
+    | None ->
+      Hashtbl.add address_tbl mod_name 0;
+      0
+    | Some label' ->
+      Hashtbl.replace address_tbl mod_name (label' + 1);
+      label' + 1
+  in
+  (mod_name, label)
+
+
+module PrimResolution = struct
+  let allocated = Hashtbl.create 10
+
+  let value_prim : (CL.Primitive.description * Label.t list) -> SESet.t * SESet.t = function
+    | {prim_name = "%revapply"}, [x; y] ->
+      (SESet.singleton (App (y, [Some x])), SESet.empty)
+    | {prim_name = "%apply"}, [x; y] ->
+      (SESet.singleton (App (x, [Some y])), SESet.empty)
+    | {prim_name = "%identity" | "%opaque"}, [x] ->
+      (SESet.singleton (Var (Val x)), SESet.empty)
+    | {prim_name = "%ignore"}, [_] -> (SESet.empty, SESet.empty)
+    | {prim_name = "%field0"}, [x] ->
+      (SESet.singleton (Fld (x, (Tuple, Some 0))), SESet.empty)
+    | {prim_name = "%field1"}, [x] ->
+      (SESet.singleton (Fld (x, (Tuple, Some 1))), SESet.empty)
+    | {prim_name = "%setfield0"}, [x; y] ->
+      update_sc (Fld (x, (Record, Some 0))) (SESet.singleton (Var (Val y )));
+      (SESet.empty, SESet.singleton SideEffect)
+    | {prim_name = "%makemutable"}, [x] -> (
+      let value = SESet.singleton (Var (Val x)) in
+      match Hashtbl.find allocated x with
+      | exception Not_found ->
+        let i = new_memory (Label.ctx x) in
+        Hashtbl.add allocated x i;
+        update_sc (Mem i) value;
+        (SESet.singleton (Ctor (Record, [i])), SESet.empty)
+      | i ->
+        update_sc (Mem i) value;
+        (SESet.singleton (Ctor (Record, [i])), SESet.empty)
+    )
+    | {prim_name = "%lazy_force"}, [x] -> (SESet.singleton (App (x, [])), SESet.empty)
+    | ( {
+          prim_name =
+            ( "%eq" | "%noteq" | "%ltint" | "%leint" | "%gtint" | "%geint"
+            | "%eqfloat" | "%noteqfloat" | "%ltfloat" | "%lefloat" | "%gtfloat"
+            | "%gefloat" | "%equal" | "%notequal" | "%lessequal" | "%lessthan"
+            | "%greaterequal" | "%greaterthan" | "%compare" | "%boolnot"
+            | "%sequand" | "%sequor" );
+        },
+        _ ) ->
+      (SESet.empty, SESet.empty)
+    | ( {
+          prim_name =
+            "%raise" | "%reraise" | "%raise_notrace" | "%raise_with_backtrace";
+        },
+        _ ) ->
+      (SESet.empty, SESet.empty)
+    | _prim, args ->
+        update_sc UsedInUnknown (args |> List.map (fun arg -> Var (Val arg)) |> SESet.of_list);
+        (SESet.singleton Unknown, SESet.singleton SideEffect)
+end
 
 let rec label_of_path path =
   match path with
@@ -341,6 +488,30 @@ let se_of_module_expr (m : CL.Typedtree.module_expr) =
     ( [Var (Val (Label.of_expression e))],
       [Var (SideEff (Label.of_expression e))] )
 
+let traverse_init_sc =
+  let super = CL.Tast_mapper.default in
+  let expr self (expr : expression) =
+    let v, seff = se_of_expr expr in
+    init_sc (Var (Val (Label.of_expression expr))) v;
+    init_sc (Var (SideEff (Label.of_expression expr))) seff;
+    super.expr self expr
+  in
+  let module_expr self (me : module_expr) =
+    let v, seff = se_of_module_expr me in
+    init_sc (Var (Val (Label.of_module_expr me))) v;
+    init_sc (Var (SideEff (Label.of_module_expr me))) seff;
+    super.module_expr self me
+  in
+  {super with expr; module_expr}
+
+let init_cmt_structure modname structure =
+  let label = Label.new_cmt_module modname in
+  let v, seff = se_of_struct structure in
+  init_sc (Id (Id.createCmtModuleId modname)) [Var (Val label)];
+  init_sc (Var (Val label)) v;
+  init_sc (Var (SideEff label)) seff;
+  label
+
 let rec split_arg n args =
   match n with
   | 0 -> ([], args)
@@ -455,7 +626,6 @@ let reduce_seff se =
     let set = SESet.filter propagate (lookup_sc (Var (SideEff e))) in
     set
   | _ ->
-    PrintSE.print_se se;
     failwith "Invalid side effect se"
 
 let reduce_value_used_in_unknown se =
@@ -493,7 +663,6 @@ let reduce_value_used_in_unknown se =
     let value, _ = reduce_value se in
     value
   | _ ->
-    PrintSE.print_se se;
     failwith "Invalid structured value"
 
 let step_sc_for_entry x =
@@ -577,3 +746,6 @@ let solve () =
          | WorkPair (key, elt) -> step_sc_for_pair (key, elt)
          | WorkKey key -> step_sc_for_entry key)
   done
+
+let hasSideEffect label =
+  lookup_sc (Var (SideEff label)) |> SESet.mem SideEffect

@@ -1,4 +1,5 @@
-open SetExpression
+open DVACommon
+open ClosureAnalysis
 
 module Loc = struct
   type t = var

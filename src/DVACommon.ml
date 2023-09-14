@@ -1,5 +1,7 @@
 open CL.Typedtree
 
+module StringSet = Set.Make (String)
+
 module Current = struct
   let cmtModName : string ref = ref ""
 end
@@ -49,6 +51,8 @@ end
 
 module Label = struct
   type t = string * int
+
+  let ctx (l : t) = fst l
 
   type value_expr_summary = {
     exp : expression;
@@ -148,6 +152,9 @@ module Label = struct
     label
 end
 
+type cmt_structure = {modname : string; structure : structure; label : Label.t}
+let cmtStructures : cmt_structure list ref = ref []
+
 type var = Val of Label.t | SideEff of Label.t
 type arg = Label.t option list
 type memory_label = string * int
@@ -187,6 +194,21 @@ type se =
   | SideEffect
   | UsedInUnknown
 
+type value =
+  | Top
+  | V_Expr of Label.t
+  | V_Id of Id.t
+  | V_Mem of Label.t
+
+let compare_value a b =
+  match (a, b) with V_Id x, V_Id y -> Id.compare x y | _ -> compare a b
+
+module ValueSet = Set.Make (struct
+  type t = value
+
+  let compare = compare_value
+end)
+
 let compare_se a b =
   match (a, b) with Id x, Id y -> Id.compare x y | _ -> compare a b
 
@@ -212,105 +234,15 @@ module SETbl = Hashtbl.Make (struct
   let hash = function Id x -> Id.hash x | x -> Hashtbl.hash x
 end)
 
-type workitem = WorkPair of se * se | WorkKey of se
-
-module WorkItemSet = Set.Make (struct
-  type t = workitem
-
-  let compare a b =
-    match (a, b) with
-    | WorkKey x, WorkKey y -> compare_se x y
-    | WorkPair (x1, x2), WorkPair (y1, y2) -> compare_se_pair (x1, x2) (y1, y2)
-    | _ -> compare a b
-end)
-
-let address_tbl : (string, int) Hashtbl.t = Hashtbl.create 10
-
-let new_memory mod_name : memory_label =
-  let label =
-    match Hashtbl.find_opt address_tbl mod_name with
-    | None ->
-      Hashtbl.add address_tbl mod_name 0;
-      0
-    | Some label' ->
-      Hashtbl.replace address_tbl mod_name (label' + 1);
-      label' + 1
-  in
-  (mod_name, label)
-
-module Worklist = struct
-  type t = (se * se) Stack.t
-
-  let push = Stack.push
-  let pop = Stack.pop
-  let is_empty = Stack.is_empty
-  let create = Stack.create
-end
-
-let worklist : Worklist.t = Worklist.create ()
-
-let sc : SESet.t SETbl.t = SETbl.create 256
-let _ = SETbl.add sc UsedInUnknown SESet.empty
-let reverse_sc : WorkItemSet.t SETbl.t = SETbl.create 256
-
-let lookup_sc se =
-  try SETbl.find sc se with Not_found -> SESet.singleton Unknown
+let annotatedAsLive attributes =
+  attributes
+  |> Annotation.getAttributePayload (( = ) DeadCommon.liveAnnotation)
+  <> None
 
 let rec front_arg_len = function
   | [] -> 0
   | None :: _ -> 0
   | Some _ :: tl -> front_arg_len tl + 1
-
-let propagate = function
-  | Unknown | Ctor _ | Prim _ | Fn _ | FnApp (_, _, None :: _) -> true
-  | PrimApp (prim, args) -> front_arg_len args < prim.prim_arity
-  | SideEffect -> true
-  | _ -> false
-
-let add_reverse se workitem =
-  match SETbl.find_opt reverse_sc se with
-  | None -> SETbl.add reverse_sc se (WorkItemSet.singleton workitem)
-  | Some orig -> SETbl.replace reverse_sc se (WorkItemSet.add workitem orig)
-
-let update_reverse (key, elt) =
-  match key with
-  | Mem _ | Id _ | Var _ -> (
-    add_reverse elt (WorkPair (key, elt));
-    match (key, elt) with
-    | Var _, Fld (e, _) | Var _, App (e, Some _ :: _) ->
-      add_reverse (Var (Val e)) (WorkPair (key, elt))
-    | _ -> ())
-  | Fld (e, _) -> add_reverse (Var (Val e)) (WorkPair (key, elt))
-  | UsedInUnknown -> add_reverse elt (WorkPair (key, elt))
-  | _ -> failwith "Invalid LHS"
-
-let get_workitems (key, elt) =
-  let items = WorkItemSet.singleton (WorkPair (key, elt)) in
-  match key with
-  | Mem _ | Id _ | Var _ when propagate elt -> (
-    match SETbl.find_opt reverse_sc key with
-    | Some rev -> WorkItemSet.union rev items
-    | None -> items)
-  | _ -> items
-
-let init_sc lhs data =
-  data |> List.iter (fun rhs -> worklist |> Worklist.push (lhs, rhs));
-  let set = SESet.of_list data in
-  match SETbl.find sc lhs with
-  | exception Not_found -> SETbl.add sc lhs set
-  | original -> SETbl.replace sc lhs (SESet.union original set)
-
-let update_sc lhs added =
-  let original = lookup_sc lhs in
-  let diff = SESet.diff added original in
-  if not (SESet.is_empty diff) then (
-    diff |> SESet.iter (fun rhs -> worklist |> Worklist.push (lhs, rhs));
-    SETbl.replace sc lhs (SESet.union original diff))
-
-let annotatedAsLive attributes =
-  attributes
-  |> Annotation.getAttributePayload (( = ) DeadCommon.liveAnnotation)
-  <> None
 
 let rec ids_in_pat (pat : pattern) =
   match pat.pat_desc with
