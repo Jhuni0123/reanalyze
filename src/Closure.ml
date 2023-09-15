@@ -374,12 +374,10 @@ let rec _evaluate_expresion expr =
     ([], [SideEffect])
   | Texp_array exps ->
     exps |> List.iter evaluate_expression;
-    let for_each_expr_val (expr : expression) =
-      let mem = Label.new_memory !Current.cmtModName in
-      init_sc (Mem mem) [Var (Val (Label.of_expression expr))];
-      mem
-    in
-    let v = [Ctor (Array, exps |> List.map for_each_expr_val)] in
+    let mem = Label.new_memory !Current.cmtModName in
+    let elements = exps |> List.map (fun exp -> Var (Val (Label.of_expression exp))) in
+    init_sc (Mem mem) elements;
+    let v = [Ctor (Array, [mem])] in
     let seff =
       exps |> List.map (fun e -> Var (SideEff (Label.of_expression e)))
     in
@@ -720,28 +718,12 @@ let reduce_seff se =
 
 let reduce_value_used_in_unknown se =
   match se with
-  | Var (Val _) | Id _ -> SESet.filter propagate (lookup_sc se)
   | Fn (arg, bodies) ->
     SESet.singleton (FnApp (arg, bodies, None :: []))
-  | Ctor (Record, mems) ->
-    mems
-    |> List.fold_left
-         (fun acc mem ->
-           let field_values = SESet.filter propagate (lookup_sc (Mem mem)) in
-           SESet.union acc field_values)
-         SESet.empty
+  | Ctor (Record, mems) | Ctor (Array, mems)->
+    mems |> List.map (fun mem -> Mem mem) |> SESet.of_list
   | Ctor (_, labels) ->
-    labels
-    |> List.fold_left
-         (fun acc label ->
-           let se =
-             match Label.to_summary label with
-             | Mem -> Mem label
-             | _ -> Var (Val label)
-           in
-           let field_values = SESet.filter propagate (lookup_sc se) in
-           SESet.union acc field_values)
-         SESet.empty
+    labels |> List.map (fun label -> Var (Val label)) |> SESet.of_list
   | FnApp (param, bodies, None :: tl) ->
     bodies |> List.iter evaluate_label;
     update_sc (Var (Val param)) (SESet.singleton Unknown);
@@ -753,7 +735,7 @@ let reduce_value_used_in_unknown se =
       |> List.filter_map (fun x -> x)
       |> List.map (fun label -> Var (Val label)) |> SESet.of_list
   | Unknown | Prim _ -> SESet.empty
-  | App _ | FnApp _ | PrimApp _ ->
+  | App _ | FnApp _ | PrimApp _ | Var (Val _) | Id _ | Mem _ ->
     let value, _ = reduce_value se in
     value
   | _ ->
