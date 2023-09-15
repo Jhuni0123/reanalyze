@@ -34,8 +34,8 @@ module Func = struct
   let ifnotbot l : t =
    fun x -> if Live.equal x Live.Bot then Live.Bot else l
 
-  let ifnotdead (e: Label.t) (f: t) : t =
-   fun x -> if isDeadExpr e then Live.Bot else f x
+  let ifnotdead (e : expression) (f: t) : t =
+   fun x -> if isDeadExpr (Label.of_expression e) then Live.Bot else f x
 
   let iftop l : t =
    fun x -> if Live.equal x Live.Top then l else Live.Bot
@@ -219,7 +219,7 @@ let collectExpr e =
              match snd arg with Some _ -> Live.Func acc | None -> acc)
            args
     in
-    addEdge (expr e) (expr e_f) fn
+    addEdge (expr e) (expr e_f) (Func.ifnotdead e fn)
   | Texp_match (exp, cases, exn_cases, _) ->
     cases @ exn_cases
     |> List.iter (fun case ->

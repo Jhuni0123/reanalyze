@@ -576,6 +576,12 @@ and evaluate_struct str =
   in
   (v, seff)
 
+and evaluate_label l =
+  match Label.to_summary l with
+  | ValueExpr es -> evaluate_expression es.exp_labeled
+  | ModExpr mes -> evaluate_module_expr mes.mod_exp_labeled
+  | _ -> ()
+
 let traverse_init_sc =
   let super = CL.Tast_mapper.default in
   let pat self p =
@@ -679,12 +685,7 @@ let reduce_value se =
           (SESet.union acc_value value', SESet.union acc_seff seff'))
         value (SESet.empty, seff))
   | FnApp (param, bodies, Some hd :: tl) ->
-    bodies |> List.iter (fun l ->
-      match Label.to_summary l with
-      | ValueExpr es -> evaluate_expression es.exp_labeled
-      | ModExpr mes -> evaluate_module_expr mes.mod_exp_labeled
-      | _ -> ()
-    );
+    bodies |> List.iter evaluate_label;
     let value =
       bodies
       |> List.map (fun body ->
@@ -754,12 +755,7 @@ let reduce_value_used_in_unknown se =
            SESet.union acc field_values)
          SESet.empty
   | FnApp (param, bodies, None :: tl) ->
-    bodies |> List.iter (fun l ->
-      match Label.to_summary l with
-      | ValueExpr es -> Current.cmtModName := fst l; evaluate_expression es.exp_labeled
-      | ModExpr mes -> Current.cmtModName := fst l; evaluate_module_expr mes.mod_exp_labeled
-      | _ -> ()
-    );
+    bodies |> List.iter evaluate_label;
     update_sc (Var (Val param)) (SESet.singleton Unknown);
     bodies
       |> List.map (fun body -> if tl = [] then Var (Val body) else App (body, tl))
