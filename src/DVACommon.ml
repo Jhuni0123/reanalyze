@@ -56,6 +56,7 @@ module Label = struct
 
   type value_expr_summary = {
     exp : expression;
+    exp_labeled : expression;
     exp_type : CL.Types.type_expr;
     exp_loc : CL.Location.t;
     exp_context : string;
@@ -63,6 +64,7 @@ module Label = struct
 
   type module_expr_summary = {
     mod_exp : module_expr;
+    mod_exp_labeled : module_expr;
     mod_type : CL.Types.module_type;
     mod_loc : CL.Location.t;
     mod_context : string;
@@ -101,15 +103,17 @@ module Label = struct
 
   let preprocess_expression (e : expression) =
     let label = new_label !Current.cmtModName in
+    let e' = {e with exp_loc = new_loc label} in
     Hashtbl.add to_summary_tbl label
       (ValueExpr
          {
            exp = e;
+           exp_labeled = e';
            exp_type = e.exp_type;
            exp_loc = e.exp_loc;
            exp_context = !Current.cmtModName;
          });
-    {e with exp_loc = new_loc label}
+    e'
 
   let of_expression (e : expression) =
     let pos = e.exp_loc.loc_start in
@@ -117,15 +121,17 @@ module Label = struct
 
   let preprocess_module_expr (me : module_expr) =
     let label = new_label !Current.cmtModName in
+    let me' = {me with mod_loc = new_loc label} in
     Hashtbl.add to_summary_tbl label
       (ModExpr
          {
            mod_exp = me;
+           mod_exp_labeled = me';
            mod_type = me.mod_type;
            mod_loc = me.mod_loc;
            mod_context = !Current.cmtModName;
          });
-    {me with mod_loc = new_loc label}
+    me'
 
   let of_module_expr (me : module_expr) =
     let pos = me.mod_loc.loc_start in
@@ -193,6 +199,7 @@ type se =
   (* Side Effect *)
   | SideEffect
   | UsedInUnknown
+  | Evaluated
 
 type value =
   | Top

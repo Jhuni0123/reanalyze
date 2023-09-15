@@ -36,15 +36,15 @@ let preprocess_mapper =
       Id.preprocess (Id.create x) ppat.ppat_loc
     | Texp_letmodule (x, l, _, _) -> Id.preprocess (Id.create x) l.loc
     | _ -> ());
-    let e' = Label.preprocess_expression e in
-    super.expr self e'
+    let e' = super.expr self e in
+    Label.preprocess_expression e'
   in
   let module_expr self me =
     (match me.mod_desc with
     | Tmod_functor (x, l, _, _) -> Id.preprocess (Id.create x) l.loc
     | _ -> ());
-    let me' = Label.preprocess_module_expr me in
-    super.module_expr self me'
+    let me' = super.module_expr self me in
+    Label.preprocess_module_expr me'
   in
   {super with pat; module_binding; value_description; expr; module_expr}
 
