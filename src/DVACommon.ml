@@ -76,6 +76,7 @@ module Label = struct
     | CmtModule of string
     | FnParam of CL.Ident.t
     | Path of CL.Path.t
+    | Mem
     | Tmp
 
   let to_summary_tbl : (t, summary) Hashtbl.t = Hashtbl.create 10
@@ -155,6 +156,11 @@ module Label = struct
   let new_cmt_module modname =
     let label = new_label modname in
     Hashtbl.add to_summary_tbl label (CmtModule modname);
+    label
+
+  let new_memory modname =
+    let label = new_label modname in
+    Hashtbl.add to_summary_tbl label Mem;
     label
 end
 

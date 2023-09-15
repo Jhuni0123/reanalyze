@@ -86,21 +86,6 @@ let update_sc lhs added =
     diff |> SESet.iter (fun rhs -> worklist |> Worklist.push (lhs, rhs));
     SETbl.replace sc lhs (SESet.union original diff))
 
-
-let address_tbl : (string, int) Hashtbl.t = Hashtbl.create 10
-
-let new_memory mod_name : memory_label =
-  let label =
-    match Hashtbl.find_opt address_tbl mod_name with
-    | None ->
-      Hashtbl.add address_tbl mod_name 0;
-      0
-    | Some label' ->
-      Hashtbl.replace address_tbl mod_name (label' + 1);
-      label' + 1
-  in
-  (mod_name, label)
-
 module PrimResolution = struct
   let allocated = Hashtbl.create 10
 
@@ -123,7 +108,7 @@ module PrimResolution = struct
       let value = SESet.singleton (Var (Val x)) in
       match Hashtbl.find allocated x with
       | exception Not_found ->
-        let i = new_memory (Label.ctx x) in
+        let i = Label.new_memory (Label.ctx x) in
         Hashtbl.add allocated x i;
         update_sc (Mem i) value;
         (SESet.singleton (Ctor (Record, [i])), SESet.empty)
@@ -344,7 +329,7 @@ let rec _evaluate_expresion expr =
   | Texp_record {fields; extended_expression} ->
     let for_each_field
         ((lbl_desc : label_description), (lbl_def : record_label_definition)) =
-      let mem = new_memory !Current.cmtModName in
+      let mem = Label.new_memory !Current.cmtModName in
       init_sc (Mem mem)
         (match lbl_def with
         | Kept _ -> (
@@ -390,7 +375,7 @@ let rec _evaluate_expresion expr =
   | Texp_array exps ->
     exps |> List.iter evaluate_expression;
     let for_each_expr_val (expr : expression) =
-      let mem = new_memory !Current.cmtModName in
+      let mem = Label.new_memory !Current.cmtModName in
       init_sc (Mem mem) [Var (Val (Label.of_expression expr))];
       mem
     in
@@ -749,9 +734,12 @@ let reduce_value_used_in_unknown se =
     labels
     |> List.fold_left
          (fun acc label ->
-           let field_values =
-             SESet.filter propagate (lookup_sc (Var (Val label)))
+           let se =
+             match Label.to_summary label with
+             | Mem -> Mem label
+             | _ -> Var (Val label)
            in
+           let field_values = SESet.filter propagate (lookup_sc se) in
            SESet.union acc field_values)
          SESet.empty
   | FnApp (param, bodies, None :: tl) ->

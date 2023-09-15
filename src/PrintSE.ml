@@ -43,6 +43,7 @@ let print_summary label =
   | FnParam id -> prerr_string ("Param:" ^ modname ^ "_" ^ string_of_int i ^ CL.Ident.unique_name id)
   | Path p -> prerr_string ("Path:" ^ modname ^ "_" ^ string_of_int i ^ CL.Path.name p)
   | CmtModule modname -> prerr_string ("Module:" ^ modname ^ ":" ^ string_of_int i)
+  | Mem -> prerr_string ("Mem:" ^ modname ^ ":" ^ string_of_int i)
   (* | exception Not_found -> prerr_string ("label?_" ^ modname ^ "_" ^ string_of_int i) *)
 
 let print_var = function
