@@ -61,14 +61,11 @@ module Config = struct
       |> List.iter (fun (x : Json.t) ->
              match x with
              | String "all" -> RunConfig.all ()
-             | String "dce" -> RunConfig.dce ()
-             | String "exception" -> RunConfig.exception_ ()
-             | String "termination" -> RunConfig.termination ()
-             | String "noalloc" -> RunConfig.noalloc ()
+             | String "dva" -> RunConfig.dva ()
              | _ -> ())
     | _ ->
-      (* if no "analysis" specified, default to dce *)
-      RunConfig.dce ()
+      (* if no "analysis" specified, default to dva *)
+      RunConfig.dva ()
 
   (* Read the config from bsconfig.json and apply it to runConfig and suppress and unsuppress *)
   let processBsconfig () =
@@ -80,14 +77,14 @@ module Config = struct
       match Json.parse text with
       | None -> ()
       | Some json -> (
-        match Json.get "reanalyze" json with
+        match Json.get "redder" json with
         | Some conf ->
           readSuppress conf;
           readUnsuppress conf;
           readAnalysis conf
         | None ->
-          (* if no "analysis" specified, default to dce *)
-          RunConfig.dce ()))
+          (* if no "analysis" specified, default to dva *)
+          RunConfig.dva ()))
 end
 
 (**

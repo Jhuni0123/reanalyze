@@ -1,6 +1,6 @@
 {
-  "reanalyze": {
-    "analysis": ["dce"],
+  "redder": {
+    "analysis": ["dva"],
     "suppress": ["src/ToSuppress.res"],
     "unsuppress": []
   },

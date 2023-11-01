@@ -1,5 +1,9 @@
 open CL.Typedtree
 
+let deadAnnotation = "dead"
+
+let liveAnnotation = "live"
+
 module StringSet = Set.Make (String)
 
 module Current = struct
@@ -249,7 +253,7 @@ end)
 
 let annotatedAsLive attributes =
   attributes
-  |> Annotation.getAttributePayload (( = ) DeadCommon.liveAnnotation)
+  |> Annotation.getAttributePayload (( = ) liveAnnotation)
   <> None
 
 let rec front_arg_len = function

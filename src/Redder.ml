@@ -31,11 +31,7 @@ let loadCmtFile cmtFilePath =
     currentModuleName :=
       !currentModule
       |> Name.create ~isInterface:(Filename.check_suffix !currentSrc "i");
-    if runConfig.dce then cmt_infos |> DeadCode.processCmt ~cmtFilePath;
-    if runConfig.dva then cmt_infos |> DVA.processCmt;
-    if runConfig.exception_ then cmt_infos |> Exception.processCmt;
-    if runConfig.noalloc then cmt_infos |> Noalloc.processCmt;
-    if runConfig.termination then cmt_infos |> Arnold.processCmt
+    if runConfig.dva then cmt_infos |> DVA.processCmt
   | _ -> ()
 
 let processCmtFiles ~cmtRoot =
@@ -88,15 +84,7 @@ let runAnalysis ~cmtRoot ~ppf =
   if !Common.Cli.json then EmitJson.start ();
 
   processCmtFiles ~cmtRoot;
-  if runConfig.dce then (
-    DeadException.forceDelayedItems ();
-    DeadOptionalArgs.forceDelayedItems ();
-    (* DeadCommon.reportDead ~checkOptionalArg:DeadOptionalArgs.check ppf; *)
-    DeadCommon.WriteDeadAnnotations.write ());
   if runConfig.dva then DVA.reportDead ~ppf;
-  if runConfig.exception_ then Exception.reportResults ~ppf;
-  if runConfig.noalloc then Noalloc.reportResults ~ppf;
-  if runConfig.termination then Arnold.reportResults ~ppf;
   let nIssues = Log_.Stats.report () in
   Log_.Stats.clear ();
   if !Common.Cli.json then EmitJson.finish ();
@@ -105,7 +93,7 @@ let runAnalysis ~cmtRoot ~ppf =
 let cli () =
   let analysisKindSet = ref false in
   let cmtRootRef = ref None in
-  let usage = "reanalyze version " ^ Version.version in
+  let usage = "redder version " ^ Version.version in
   let versionAndExit () =
     print_endline usage;
     exit 0
@@ -118,23 +106,8 @@ let cli () =
   and setConfig () =
     Paths.Config.processBsconfig ();
     analysisKindSet := true
-  and setDCE cmtRoot =
-    RunConfig.dce ();
-    cmtRootRef := cmtRoot;
-    analysisKindSet := true
   and setDVA cmtRoot =
     RunConfig.dva ();
-    cmtRootRef := cmtRoot;
-    analysisKindSet := true
-  and setException cmtRoot =
-    RunConfig.exception_ ();
-    cmtRootRef := cmtRoot;
-    analysisKindSet := true
-  and setNoalloc () =
-    RunConfig.noalloc ();
-    analysisKindSet := true
-  and setTermination cmtRoot =
-    RunConfig.termination ();
     cmtRootRef := cmtRoot;
     analysisKindSet := true
   and speclist =
@@ -146,20 +119,12 @@ let cli () =
          path" );
       ("-ci", Unit (fun () -> Cli.ci := true), "Internal flag for use in CI");
       ("-config", Unit setConfig, "Read the analysis mode from bsconfig.json");
-      ("-dce", Unit (fun () -> setDCE None), "Eperimental DCE");
-      ("-dva", Unit (fun () -> setDVA None), "Eperimental DVA");
-      ("-debug", Unit (fun () -> Cli.debug := true), "Print debug information");
-      ( "-dce-cmt",
-        String (fun s -> setDCE (Some s)),
+      ("-dva", Unit (fun () -> setDVA None), "Experimental DVA");
+      ( "-dva-cmt",
+        String (fun s -> setDVA (Some s)),
         "root_path Experimental DCE for all the .cmt files under the root path"
       );
-      ( "-exception",
-        Unit (fun () -> setException None),
-        "Experimental exception analysis" );
-      ( "-exception-cmt",
-        String (fun s -> setException (Some s)),
-        "root_path Experimental exception analysis for all the .cmt files \
-         under the root path" );
+      ("-debug", Unit (fun () -> Cli.debug := true), "Print debug information");
       ( "-native-build-target",
         String (fun s -> Common.Cli.nativeBuildTarget := Some s),
         "A path for the build target, defaults to ''. Can be useful for native \
@@ -192,7 +157,6 @@ let cli () =
             Common.Cli.livePaths := paths @ Common.Cli.livePaths.contents),
         "comma-separated-path-prefixes Consider all values whose path has a \
          prefix in the list as live" );
-      ("-noalloc", Unit setNoalloc, "");
       ( "-set-exit-code",
         Set Common.Cli.exitCode,
         "Exit with code 1 in case an issue is detected" );
@@ -203,13 +167,6 @@ let cli () =
             runConfig.suppress <- names @ runConfig.suppress),
         "comma-separated-path-prefixes Don't report on files whose path has a \
          prefix in the list" );
-      ( "-termination",
-        Unit (fun () -> setTermination None),
-        "Experimental termination analysis" );
-      ( "-termination-cmt",
-        String (fun s -> setTermination (Some s)),
-        "root_path Experimental termination analysis for all the .cmt files \
-         under the root path" );
       ( "-unsuppress",
         String
           (fun s ->

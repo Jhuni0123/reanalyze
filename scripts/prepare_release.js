@@ -27,10 +27,10 @@ const packageJson = JSON.stringify(
     scripts: {
       postinstall: "node ./postinstall.js"
     },
-    bin: { "reanalyze": "reanalyze.exe" },
+    bin: { "redder": "redder.exe" },
     files: [
       // Dummy file
-      "reanalyze.exe",
+      "redder.exe",
       "postinstall.js",
       "vendor-linux/",
       "vendor-darwin/",

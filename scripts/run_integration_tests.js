@@ -3,14 +3,14 @@ const child_process = require("child_process");
 const path = require("path");
 const pjson = require("../package.json");
 
-const exampleDirNames = ["deadcode", "termination"];
+const exampleDirNames = ["deadcode"];
 const exampleDirPaths = exampleDirNames.map((exampleName) =>
   path.join(__dirname, "..", "examples", exampleName)
 );
 
 const isWindows = /^win/i.test(process.platform);
 
-const reanalyzeFile = path.join(__dirname, "../_build/default/src/Reanalyze.exe");
+const redderFile = path.join(__dirname, "../_build/default/src/Redder.exe");
 
 /*
 Needed for wrapping the stdout pipe with a promise
@@ -96,7 +96,7 @@ function checkDiff() {
 
     if (output.length > 0) {
       throw new Error(
-        `Changed files detected in path '${exampleDir}'! Make sure reanalyze is emitting the right code and commit the files to git` +
+        `Changed files detected in path '${exampleDir}'! Make sure redder is emitting the right code and commit the files to git` +
           "\n" +
           output +
           "\n"
@@ -111,13 +111,13 @@ function checkSetup() {
 
   /* Compare the --version output with the package.json version number (should match) */
   try {
-    output = child_process.execSync(`${reanalyzeFile} --version`, {
+    output = child_process.execSync(`${redderFile} --version`, {
       shell: isWindows,
       encoding: "utf8",
     });
   } catch (e) {
     throw new Error(
-      `reanalyze --version caused an unexpected error: ${e.message}`
+      `redder --version caused an unexpected error: ${e.message}`
     );
   }
 
@@ -126,7 +126,7 @@ function checkSetup() {
 
   if (output.indexOf(pjson.version) === -1) {
     throw new Error(
-      path.basename(reanalyzeFile) +
+      path.basename(redderFile) +
         ` --version doesn't contain the version number of package.json` +
         `("${stripNewlines(output)}" should contain ${pjson.version})` +
         `- Run \`node scripts/bump_version_module.js\` and rebuild to sync version numbers`

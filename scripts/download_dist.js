@@ -9,10 +9,10 @@ const path = require("path");
 
 const projectRoot = path.join(__dirname, "..");
 
-const filename = `reanalyze-v${pjson.version}.tgz`;
+const filename = `redder-v${pjson.version}.tgz`;
 
 const targetLink = (version) =>
-  `https://github.com/cristianoc/reanalyze/releases/download/v${version}/${filename}`;
+  `https://github.com/jhuni0123/redder/releases/download/v${version}/${filename}`;
 
 const target = targetLink(pjson.version);
 

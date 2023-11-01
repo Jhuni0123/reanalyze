@@ -411,7 +411,7 @@ let rec _evaluate_expresion expr =
     let seff_cond = Var (SideEff (Label.of_expression exp_cond)) in
     let seff_body = Var (SideEff (Label.of_expression exp_body)) in
     ([], [seff_cond; seff_body])
-  | Texp_for (x, _, exp1, exp2, _, exp_body) ->
+  | Texp_for (_, _, exp1, exp2, _, exp_body) ->
     evaluate_expression exp1;
     evaluate_expression exp2;
     evaluate_expression exp_body;

@@ -1,0 +1,30 @@
+opam-version: "2.0"
+synopsis: "Dead values analysis for OCaml/ReScript"
+description: """
+Experimental analyses for ReScript/OCaml/Reason: for globally dead values.
+"""
+maintainer: ["Jonghun Park"]
+authors: ["Jonghun Park"]
+license: "MIT"
+homepage: "https://github.com/jhuni0123/redder"
+bug-reports: "https://github.com/jhuni0123/redder/issues"
+depends: [
+  "dune" {>= "2.0"}
+  "ocaml" {>= "4.08.0" & < "5.1"}
+  "cppo" {build}
+]
+build: [
+  ["dune" "subst"] {dev}
+  [
+    "dune"
+    "build"
+    "-p"
+    name
+    "-j"
+    jobs
+    "@install"
+    "@runtest" {with-test}
+    "@doc" {with-doc}
+  ]
+]
+dev-repo: "git+https://github.com/jhuni0123/redder.git"
