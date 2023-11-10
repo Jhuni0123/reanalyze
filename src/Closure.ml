@@ -123,7 +123,7 @@ module PrimResolution = struct
             | "%eqfloat" | "%noteqfloat" | "%ltfloat" | "%lefloat" | "%gtfloat"
             | "%gefloat" | "%equal" | "%notequal" | "%lessequal" | "%lessthan"
             | "%greaterequal" | "%greaterthan" | "%compare" | "%boolnot"
-            | "%sequand" | "%sequor" );
+            | "%sequand" | "%sequor" | "%addint" | "%subint" | "%mulint" );
         },
         _ ) ->
       (SESet.empty, SESet.empty)
