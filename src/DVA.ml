@@ -175,14 +175,14 @@ let report v ~ppf =
     | ValueExpr e ->
       if not e.exp_loc.loc_ghost then (
         let name = "Warning Dead Expression" in
-        let message = "This expression is evaluated as useless value and has no side effect" in
+        let message = "This expression has values that are never used and has no side effect" in
         warning ~ppf ~loc:e.exp_loc name message)
     | _ -> ())
   | V_Id id ->
     let summary = Id.to_summary id in
     if not summary.id_loc.loc_ghost then (
       let name = "Warning Dead Variable" in
-      let message = "This variable always has useless value" in
+      let message = "This variable has values that are never used" in
       warning ~ppf ~loc:summary.id_loc name message)
   | _ -> ()
 
