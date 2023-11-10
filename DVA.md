@@ -21,6 +21,10 @@ Then we can collect many rules with the form of "If this value's some parts are 
 
 With those dead values/dead expressions, we may not able to delete them directly. Instead, we may replace the expression with a dummy value or change some structures to remove unintended dead values. For example with the above code, we can replace `f(20, 30)` with a dummy value `0` or we may able to remove the useless `b` field of `recordA` type and these do not change the program's result.
 
+### Control flow analysis
+In the control flow analysis, it tracks every possible control flows without context information (0-CFA). While analysing, it also checks whether each expression can actually be executed and has side effects.
+It uses the worklist algorithm that improves the algorithm in [LimitEpsilon/reanalyze-ropas](https://github.com/LimitEpsilon/reanalyze-ropas) to make it fast enough.
+
 ## Benchmarks
 I tested this analyzer with two benchmarks: [eko](https://github.com/Zeta611/eko) and [sinsunhi-frontend-mirror](https://github.com/green-labs/sinsunhi-frontend-mirror).
 
